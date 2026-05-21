@@ -8,6 +8,19 @@ Estimated total time: **~70 minutes** spread across whenever you have access to 
 
 ---
 
+## Current progress
+
+_Last updated: 2026-05-21_
+
+- [x] **Phase 0 — Notion** (Notes + Tasks only; Contacts/Projects/Opportunities/Decisions deferred per their `(can defer …)` labels)
+- [ ] **Phase 1 — Google Cloud** ← you are here
+- [ ] Phase 2 — Composio + OpenRouter + Hermes (Week 2)
+- [ ] Phase 3 — iPhone Shortcut (anytime after Phase 1)
+
+The four deferred DBs (Contacts, Projects, Opportunities, Decisions) are not required for Week 1. When you create them, come back and fill in the matching `*_DB_ID` rows in `.env`, share each with the `Virgil Agent` integration, and tick the boxes in Phase 0 Steps 2 and 4.
+
+---
+
 ## Phase 0 — Notion (30 min)
 
 ### Step 1: Create the six databases
@@ -20,6 +33,14 @@ In your Notion workspace, create six new full-page databases. For each:
 - Add properties per the schemas below
 
 **Use the exact property names listed** — the code references them by name.
+
+Status:
+- [x] Notes — created
+- [x] Tasks — created
+- [ ] Contacts *(deferred to Week 2-3)*
+- [ ] Projects *(deferred to Week 2-3)*
+- [ ] Opportunities *(deferred to Week 9-12)*
+- [ ] Decisions *(deferred to Week 9-12)*
 
 ---
 
@@ -152,12 +173,12 @@ For **Notes** and **Tasks** (the two you need for Week 1):
 
 Save these — you'll put them in `.env` in Phase 1, Step 2.
 
-- `NOTES_DB_ID` = ________________________________
-- `TASKS_DB_ID` = ________________________________
-- `CONTACTS_DB_ID` = ________________________________ *(fill when you create it)*
-- `PROJECTS_DB_ID` = ________________________________ *(fill when you create it)*
-- `OPPORTUNITIES_DB_ID` = ________________________________ *(fill when you create it)*
-- `DECISIONS_DB_ID` = ________________________________ *(fill when you create it)*
+- [x] `NOTES_DB_ID` — set in `.env`
+- [x] `TASKS_DB_ID` — set in `.env`
+- [ ] `CONTACTS_DB_ID` *(fill when you create it)*
+- [ ] `PROJECTS_DB_ID` *(fill when you create it)*
+- [ ] `OPPORTUNITIES_DB_ID` *(fill when you create it)*
+- [ ] `DECISIONS_DB_ID` *(fill when you create it)*
 
 ---
 
@@ -173,7 +194,7 @@ Save these — you'll put them in `.env` in Phase 1, Step 2.
 
 Save it — this becomes `NOTION_TOKEN` in your `.env`.
 
-- `NOTION_TOKEN` = ________________________________
+- [x] `NOTION_TOKEN` — set in `.env`
 
 ---
 
@@ -186,8 +207,8 @@ For every database you've created:
 
 **If you skip this step, every API call returns 404. It must be done for every DB.**
 
-- [ ] Notes shared with Virgil Agent
-- [ ] Tasks shared with Virgil Agent
+- [x] Notes shared with Virgil Agent
+- [x] Tasks shared with Virgil Agent
 - [ ] Contacts shared with Virgil Agent *(when created)*
 - [ ] Projects shared with Virgil Agent *(when created)*
 - [ ] Opportunities shared with Virgil Agent *(when created)*
@@ -205,16 +226,31 @@ Go to **Settings → Plans** in your Notion workspace and enable Notion AI ($10/
 
 ### Phase 0 complete check
 
-Run this in your terminal (after Phase 1 Step 2 is done):
+Run this in your terminal once `.env` has `NOTION_TOKEN`, `NOTES_DB_ID`, and `TASKS_DB_ID` filled in. No virtualenv needed — only `curl` and the system `python3`.
 
 ```bash
-source .venv/bin/activate
-curl -s https://api.notion.com/v1/databases/$NOTES_DB_ID \
+cd /Users/donnieb/Desktop/Code/Virgil
+set -a && source .env && set +a   # load NOTION_TOKEN + *_DB_ID into the shell
+
+curl -s "https://api.notion.com/v1/databases/$NOTES_DB_ID" \
+  -H "Authorization: Bearer $NOTION_TOKEN" \
+  -H "Notion-Version: 2022-06-28" | python3 -m json.tool | grep '"plain_text"'
+
+curl -s "https://api.notion.com/v1/databases/$TASKS_DB_ID" \
   -H "Authorization: Bearer $NOTION_TOKEN" \
   -H "Notion-Version: 2022-06-28" | python3 -m json.tool | grep '"plain_text"'
 ```
 
-Should return `"Notes"`. If it returns a 404, the integration isn't shared with the DB.
+You should see `"plain_text": "Notes"` from the first call and `"plain_text": "Tasks"` from the second.
+
+If `grep` prints nothing, rerun the same `curl | python3 -m json.tool` without the `grep` and look at the response:
+- `"object": "database"` + a `title` block → success (grep just didn't find the title token).
+- `"status": 401` / `"unauthorized"` → bad `NOTION_TOKEN`.
+- `"status": 404` / `"object_not_found"` → DB ID is wrong, or the `Virgil Agent` integration isn't connected to that database (open the DB → `⋯` top right → **Connections** → add it).
+
+Status:
+- [x] Notes DB returns `"object": "database"`
+- [x] Tasks DB returns `"object": "database"`
 
 ---
 
@@ -245,7 +281,7 @@ Should return `"Notes"`. If it returns a 404, the integration isn't shared with 
 4. Click **Create**
 5. Download the JSON file
 6. Rename it to `credentials.json`
-7. Move it to `/Users/donnieb/Desktop/Code/Vigil/credentials.json`
+7. Move it to `/Users/donnieb/Desktop/Code/Virgil/credentials.json`
 
 ---
 
@@ -254,7 +290,7 @@ Should return `"Notes"`. If it returns a 404, the integration isn't shared with 
 Open the `.env.example` file and copy it to `.env`:
 
 ```bash
-cd /Users/donnieb/Desktop/Code/Vigil
+cd /Users/donnieb/Desktop/Code/Virgil
 cp .env.example .env
 ```
 
@@ -270,15 +306,29 @@ NEWS_RSS_FEEDS=...                 ← defaults are pre-filled; edit if desired
 
 Leave `COMPOSIO_API_KEY` and `OPENROUTER_API_KEY` blank for now — those are Week 2.
 
+> **Heads up:** `.env.example` ships with `OBSIDIAN_VAULT_PATH=/Users/donnieb/Desktop/Code/Vigil/obsidian` (typo). When you copy it, edit your `.env` to use the correct `…/Virgil/obsidian` path. Not required for Week 1, but easier to fix now than later.
+
+Status:
+- [x] `NOTION_TOKEN`, `NOTES_DB_ID`, `TASKS_DB_ID` filled
+- [ ] `TIMEZONE` confirmed
+- [ ] `OBSIDIAN_VAULT_PATH` corrected to `…/Virgil/obsidian`
+
 ---
 
 ### Step 4: Create the virtualenv and install dependencies
 
 ```bash
-cd /Users/donnieb/Desktop/Code/Vigil
+cd /Users/donnieb/Desktop/Code/Virgil
 python3 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+Sanity check that the core packages installed:
+
+```bash
+python -c "import notion_client, google.auth, googleapiclient, feedparser; print('deps OK')"
 ```
 
 ---
