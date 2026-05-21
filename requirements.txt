@@ -1,0 +1,17 @@
+# ─── Week 1 ───────────────────────────────────────────────────────────────────
+notion-client>=2.2
+google-api-python-client>=2.140
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+feedparser>=6.0
+python-dotenv>=1.0
+pydantic>=2.7
+tenacity>=8.5
+
+# ─── Week 2 (uncomment before starting Week 2 sprint) ─────────────────────────
+# composio-core>=0.5
+# openai>=1.40          # used for OpenRouter (OpenAI-compatible endpoint)
+# hermes-agent>=2026.5  # pin to the exact version you install
+
+# ─── Week 5 (uncomment before starting Week 5 sprint) ─────────────────────────
+# obsidian-semantic-memory    # MCP server — install separately per its README
