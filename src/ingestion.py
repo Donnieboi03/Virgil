@@ -25,23 +25,6 @@ from .google_clients import calendar, gmail
 from .news import fetch_headlines, format_for_briefing
 from .notion_client import create_briefing_note
 
-# Keywords that suggest an inbox item might need a Task created (Week 2+).
-# At Week 1 these appear as a note in the briefing body only.
-_ACTION_KEYWORDS = (
-    "invoice",
-    "sign",
-    "rsvp",
-    "meeting",
-    "schedule",
-    "review",
-    "deadline",
-    "due",
-    "action required",
-    "please confirm",
-    "follow up",
-    "urgent",
-)
-
 
 def _today_iso(tz: ZoneInfo) -> str:
     return dt.datetime.now(tz).date().isoformat()
@@ -51,19 +34,27 @@ def _gmail_triage(tz: ZoneInfo) -> tuple[str, list[dict]]:
     """Return (summary_markdown, raw_thread_list).
 
     summary_markdown: bullet list of senders + subjects + snippet
-    raw_thread_list: raw dicts for downstream use (Week 2 Task seeding)
+    raw_thread_list: raw dicts for downstream use
+
+    Actionability detection lives in src/notion_processor.py (Phase 2),
+    which invokes Notion AI on the rendered briefing. This module stays
+    a dumb pipeline — no regex heuristics, no precomputed flags.
     """
     svc = gmail()
     resp = (
         svc.users()
         .messages()
-        .list(userId="me", q="in:inbox is:unread newer_than:1d", maxResults=30)
+        .list(
+            userId="me",
+            q="in:inbox (is:unread OR newer_than:1d)",
+            maxResults=10,
+        )
         .execute()
     )
     msgs = resp.get("messages", [])
 
     if not msgs:
-        return "_Inbox zero — no unread messages in the last 24 hours._", []
+        return "_Inbox zero — no unread or recent messages._", []
 
     lines: list[str] = []
     raw: list[dict] = []
@@ -84,16 +75,13 @@ def _gmail_triage(tz: ZoneInfo) -> tuple[str, list[dict]]:
         sender = headers.get("From", "(unknown)")
         subject = headers.get("Subject", "(no subject)")
         snippet = full.get("snippet", "")[:200]
-        flagged = any(k in subject.lower() or k in snippet.lower() for k in _ACTION_KEYWORDS)
-        flag_icon = " ⚑" if flagged else ""
-        lines.append(f"- **{subject}**{flag_icon}  _{sender}_\n  {snippet}")
+        lines.append(f"- **{subject}**  _{sender}_\n  {snippet}")
         raw.append(
             {
                 "id": m["id"],
                 "from": sender,
                 "subject": subject,
                 "snippet": snippet,
-                "flagged": flagged,
             }
         )
 

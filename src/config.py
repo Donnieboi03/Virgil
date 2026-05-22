@@ -70,8 +70,6 @@ class Config:
 
         feeds_raw = _optional(
             "NEWS_RSS_FEEDS",
-            "https://feeds.arstechnica.com/arstechnica/index,"
-            "https://www.politico.com/rss/politicopicks.xml,"
             "https://hnrss.org/frontpage",
         )
         self.news_rss_feeds = [f.strip() for f in feeds_raw.split(",") if f.strip()]

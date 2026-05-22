@@ -10,10 +10,11 @@ Estimated total time: **~70 minutes** spread across whenever you have access to 
 
 ## Current progress
 
-_Last updated: 2026-05-21_
+_Last updated: 2026-05-22_
 
 - [x] **Phase 0 — Notion** (Notes + Tasks only; Contacts/Projects/Opportunities/Decisions deferred per their `(can defer …)` labels)
-- [ ] **Phase 1 — Google Cloud** ← you are here
+- [x] **Phase 1 — Google Cloud** — OAuth, first briefing, launchd at 08:00; manual `launchctl start` verified in Notion
+- [ ] **Phase 1.5 — Notion AI -> Draft Tasks bridge** (~20 min Notion-side; helper code lands in Phase 2)
 - [ ] Phase 2 — Composio + OpenRouter + Hermes (Week 2)
 - [ ] Phase 3 — iPhone Shortcut (anytime after Phase 1)
 
@@ -345,13 +346,21 @@ A browser window will open asking you to log into your Google account. Click **A
 **macOS note:** If the briefing note appears but later cron runs fail silently, you need to grant Full Disk Access to `cron`:
 - System Settings → Privacy & Security → Full Disk Access → click `+` → navigate to `/usr/sbin/cron`
 
-- [ ] `token.json` created
-- [ ] Daily Briefing note appeared in Notion Notes DB
-- [ ] News, Inbox, and Schedule sections are populated
+**Troubleshooting:**
+
+- *`Error 403: access_denied` / "Virgil has not completed the Google verification process"* — Your Gmail isn't on the project's Test users list. Fix: [Google Cloud Console → OAuth consent screen](https://console.cloud.google.com/apis/credentials/consent) → confirm project is `virgil-ingestion` → **Test users** → **+ Add users** → add the exact Gmail you're signing in with (e.g. the one shown in the error). Save, then rerun `python -m src.ingestion` and pick that account in the browser. The "Google hasn't verified this app" warning is normal in Testing mode — click **Advanced → Go to Virgil (unsafe) → Allow**.
+- *Refresh token expires after 7 days* — Apps in Testing mode rotate refresh tokens weekly. If the cron starts failing silently after a week, delete `token.json` and rerun `python -m src.ingestion` once to re-auth.
+- *"credentials.json not found"* — File must be named exactly `credentials.json` and live at the project root.
+
+- [x] `token.json` created
+- [x] Daily Briefing note appeared in Notion Notes DB
+- [x] News, Inbox, and Schedule sections are populated
 
 ---
 
 ### Step 6: Install the daily cron
+
+> Set `INGESTION_HOUR` and `INGESTION_MINUTE` in `.env` first if you want a time other than 05:00. To change later, edit `.env` and rerun the installer. The schedule uses your Mac's local system clock (System Settings → General → Date & Time), not the `TIMEZONE` value in `.env`.
 
 ```bash
 chmod +x scripts/install_launchd.sh
@@ -364,14 +373,92 @@ Verify it loaded:
 launchctl list | grep virgil
 ```
 
-Should show `com.virgil.ingestion`. The briefing will now run automatically at 05:00 every morning.
+Should show `com.virgil.ingestion`. The briefing will now run automatically at the time you set in `.env` (default 05:00) every morning.
 
-- [ ] launchd job installed
-- [ ] Verified with `launchctl list | grep virgil`
+- [x] launchd job installed
+- [x] Verified with `launchctl list | grep virgil`
+
+---
+
+## Phase 1.5 — Notion AI -> Draft Tasks bridge (~20 min Notion-side; helper code lands in Phase 2)
+
+This is where briefings turn into actionable Tasks. The actual script (`src/notion_processor.py`) lands in Phase 2; the steps below set up everything on the Notion side so the script has somewhere to write.
+
+> **Architectural rule (from [PLAN.md](PLAN.md) lines 89, 185, 195-199):** Notion AI is the only writer of new Tasks. **Hermes never creates Tasks** — it only reads Tasks with `Status=Approved` and updates `Status` / `System Log` / Reflections. This bridge is a standalone helper — **not Hermes** — so the actor's context stays clean.
+
+### Step 1: Confirm Notion AI is enabled
+
+Cross-reference Phase 0 Step 5 ($10/mo, required from Week 2). The processor cannot run without it.
+
+- [ ] Notion AI subscription active
+
+---
+
+### Step 2: Confirm Tasks DB is shared with the Virgil Agent integration
+
+Cross-reference Phase 0 Step 4. The processor needs `Status=Draft` write access to the Tasks DB.
+
+- [ ] Tasks DB shows `Virgil Agent` under Connections
+
+---
+
+### Step 3: Manual day-one fallback
+
+Until `src/notion_processor.py` ships, extract tasks by hand to keep the muscle memory:
+
+1. Open today's **Daily Briefing** page in Notion.
+2. Highlight the **Inbox** (or **Schedule**) section → **Ask AI** → paste:
+   > Extract action items as a markdown bullet list. For each item include: who, what, by when, target (one of Gmail / Calendar / Notion / Browser / Manual).
+3. Open the **Tasks** DB → create one Draft row per extracted item, filling `Task Name`, `Context`, `Target`, and a guess at `Risk Tier` (default `2-Approval` when unsure).
+
+This is the same shape `src/notion_processor.py` will automate in Phase 2 — doing it manually a few times will inform the prompt template in Step 4.
+
+- [ ] Tried manual extraction on at least one briefing
+
+---
+
+### Step 4: Draft the extraction prompt template
+
+Before code, lock down what the helper will ask Notion AI for. The prompt will eventually live at `prompts/notion_processor_extract.md` (file created in Phase 2). Spec:
+
+- **Input:** the full body of one Daily Briefing page (or Meeting Notes page).
+- **Output:** JSON array. Each item:
+  - `task_name` — short imperative ("Reply to Sarah re: Acme contract")
+  - `context` — 1-3 sentences with enough detail for Hermes to execute without re-reading the source
+  - `target` — one of `Gmail` / `Calendar` / `Notion` / `Browser` / `Manual`
+  - `risk_tier` — one of `0-Auto` / `1-Draft` / `2-Approval` / `3-Manual` (default `2-Approval` when unclear)
+  - `eisenhower` — one of `Q1 Urgent+Important` / `Q2 Important` / `Q3 Urgent` / `Q4 Neither` (default `Q2 Important` when unclear)
+  - `due_date` — ISO date if mentioned, else null
+
+Iterate on this during Phase 2 against real briefings. The first version doesn't have to be perfect.
+
+- [ ] Prompt template drafted (notes captured somewhere; the file itself lands in Phase 2)
+
+---
+
+### Step 5: Decide invocation pattern (Phase 2)
+
+Pick one before Phase 2 starts:
+
+- **Chained:** `src/ingestion.py` calls `src/notion_processor.py` at the end of its run. Simpler, one cron job. If the processor fails, the briefing still lands.
+- **Separate cron:** dedicated launchd job a few minutes after ingestion. More decoupled, more moving parts.
+
+- [ ] Decision logged in [BACKLOG.md](BACKLOG.md) or [PLAN.md](PLAN.md)
+
+---
+
+### Step 6: Implementation tracked in BACKLOG
+
+See [BACKLOG.md](BACKLOG.md) → "`src/notion_processor.py` — Notion AI bridge for Daily Briefing → Draft Tasks" for the actual code work. It blocks Phase 2 — Tasks DB must start populating before Hermes is useful.
 
 ---
 
 ## Phase 2 — Composio + OpenRouter + Hermes *(Week 2, do before starting Week 2 sprint)*
+
+> **Architectural reminder before you start Phase 2:**
+> - **Hermes never creates Tasks.** It only reads Tasks with `Status=Approved` and updates `Status` / `System Log` / Reflection notes.
+> - Task creation is owned by **`src/notion_processor.py`** (a separate, non-Hermes helper) that bridges Daily Briefings → Notion AI extraction → Draft Tasks.
+> - Configure that helper *before* installing Hermes, or Hermes will poll an empty Tasks DB and do nothing.
 
 ### Step 1: Create Composio account
 
@@ -508,9 +595,9 @@ If you ever accidentally commit any of these, **revoke the secret immediately** 
 
 ## Week 1 success criteria
 
-- [ ] Daily Briefing appears in Notion Notes DB every morning at 05:00
-- [ ] Briefing has three sections: News, Inbox, Schedule — all populated
-- [ ] `launchctl list | grep virgil` shows the job as loaded
+- [ ] Daily Briefing appears in Notion Notes DB every morning at scheduled time (08:00 local; confirm after first unattended run)
+- [x] Briefing has three sections: News, Inbox, Schedule — all populated
+- [x] `launchctl list | grep virgil` shows the job as loaded
 - [ ] iPhone alarm fires at 05:30 and sets a "Meeting Prep" alarm 45 min before first meeting
 - [ ] You have not overslept a meeting since the shortcut was installed
 

@@ -15,13 +15,13 @@
     <key>WorkingDirectory</key>
     <string>REPO_ROOT_PLACEHOLDER</string>
 
-    <!-- Run at 05:00 AM every day -->
+    <!-- Time substituted by scripts/install_launchd.sh from INGESTION_HOUR / INGESTION_MINUTE in .env -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>5</integer>
+        <integer>HOUR_PLACEHOLDER</integer>
         <key>Minute</key>
-        <integer>0</integer>
+        <integer>MINUTE_PLACEHOLDER</integer>
     </dict>
 
     <key>StandardOutPath</key>
