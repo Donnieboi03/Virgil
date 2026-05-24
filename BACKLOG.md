@@ -24,14 +24,93 @@ When you pick something up, move it into `NEXTSTEPS.md` (or a new plan) and dele
 - **When to revisit:** First time you travel or change Mac timezone and the briefing date stamp goes wrong.
 - **Source:** `notes_pipeline_polish` plan.
 
-### `src/notion_processor.py` — Notion AI bridge for Daily Briefing -> Draft Tasks
+### ~~`src/notion_processor.py` — Daily Briefing -> Draft Tasks bridge~~ **[SHIPPED 2026-05-23]**
 
-- **What:** Standalone Python script (**not Hermes**) that runs after `src/ingestion.py`, calls the Notion AI API on the newly created Daily Briefing page, extracts action items, and writes them to the Tasks DB as rows with `Status=Draft`. Uses the prompt template from `prompts/notion_processor_extract.md` (also to be created).
-- **Why deferred:** Belongs in Phase 2 alongside the rest of the Tasks pipeline. Requires Notion AI subscription + a calibrated prompt template (see NEXTSTEPS Phase 1.5 Step 4 for the spec). Removing the action-keyword regex in `src/ingestion.py` creates a temporary gap (no automatic flagging) that the manual fallback in NEXTSTEPS Phase 1.5 Step 3 covers.
-- **When to revisit:** **Phase 2 Step 0, before Composio/Hermes install.** Tasks DB must start populating before Hermes is useful — otherwise Hermes polls an empty queue.
-- **Architectural constraint:** **Hermes never writes Tasks** (`PLAN.md` lines 185, 195-199). This script and humans are the only writers. Hermes only reads Tasks with `Status=Approved` and updates `Status` / `System Log` / Reflection notes.
-- **Open decision:** chained from `src/ingestion.py` vs. separate launchd job — see NEXTSTEPS Phase 1.5 Step 5.
-- **Source:** `notes_pipeline_polish` plan; `PLAN.md` lines 89, 185, 195-199, 327-332.
+- **What shipped:** `src/notion_processor.py` reads a Notion page body, calls an LLM via OpenRouter (not Notion AI — see decision below), parses structured JSON, writes one Draft Task per item. Chained at the end of `src/ingestion.py`. Prompt template at `prompts/notion_processor_extract.md`.
+- **Architectural rule preserved:** **Hermes never writes Tasks.** This module is the only writer of new Task rows. Hermes (Phase 2) only reads Tasks with `Status=Approved` and updates Status / System Log / Reflection fields.
+- **Smoke harness:** `tests/manual/01_*` through `tests/manual/07_*` — bottom-up checkpoint scripts. See `tests/manual/README.md`.
+- **Source:** `phase_15_extractor_build` plan; previously `notes_pipeline_polish` + `PLAN.md` actor/writer rule.
+
+---
+
+## Phase 2 executor / Tasks layer (deferred refinements)
+
+These were considered during the architectural planning session and intentionally cut from Phase 2's first build. Each entry records the trigger that should pull it back into NEXTSTEPS.
+
+### Suspended status + Resumption Context + round-robin quantum (Option A execution)
+
+- **What:** Upgrade the Phase 2 executor from deadline-only Time Budget (Option B — current design) to cooperative round-robin (Option A). Add `Status=Suspended`, a `Resumption Context` text field on Tasks, an LLM-based summarization step at quantum expiry, and a hybrid local-file (`logs/working_memory/<task_id>.jsonl`) + Notion field storage for the scratchpad. Loaded back into the LLM prompt on resume.
+- **Why deferred:** Single-user, no concurrency pressure in Phase 2. Runaway protection is the only real need, and the deadline pattern covers it in ~10 lines. Option A is ~300 lines plus a per-suspension LLM call. YAGNI until signal appears.
+- **When to revisit:** When **legitimate** Tasks routinely exceed their `Time Budget` even after bumps, indicating work that genuinely spans multiple sessions. Or when parallel sub-agents ship (then fairness starts to matter).
+- **Source:** `arch_refinements_planning` plan.
+
+### WIP Slot enforcement
+
+- **What:** Re-enable the `WIP Slot` column on the Tasks DB schema and have the executor enforce a max concurrent `Processing` count.
+- **Why deferred:** Phase 2 executor is single-threaded (one Task at a time per process). The column would always read 1; there's no concurrency to throttle.
+- **When to revisit:** When parallel sub-agents ship (per [PLAN.md](PLAN.md) line 65) or when a second executor process is added. Pairs with **Concurrent Tasks capture** below.
+- **Source:** `arch_refinements_planning` plan; original [PLAN.md](PLAN.md) Step 4 of Execution Loop pre-refinement.
+
+### Step budget and token budget for execution
+
+- **What:** Add additional ceilings beyond `Time Budget` — max LLM tool calls per attempt (`step_budget`), max tokens spent per attempt (`token_budget`). Hit any one → Timeout.
+- **Why deferred:** Time Budget alone catches the runaway case for typical Phase 2 Tasks. Multi-axis budgeting adds schema + executor complexity without proven signal.
+- **When to revisit:** When a single Task burns through meaningful LLM cost without exceeding wall time (e.g. a fast-but-pathological tool-call loop), or when LLM bill is concentrated in a small number of Tasks.
+- **Source:** `arch_refinements_planning` plan.
+
+### Concurrent Tasks capture in failure reflections
+
+- **What:** When writing a failure Reflection, include the list of Tasks that were in `Status=Processing` at the same moment. Lets the weekly Learning step detect contention patterns ("Gmail 503s cluster at 8am when 5 Tasks ran concurrently").
+- **Why deferred:** Single-threaded Phase 2 executor means concurrent count is always 0 or 1. Field is meaningless until parallelism exists.
+- **When to revisit:** Ship alongside **WIP Slot enforcement**.
+- **Source:** `arch_refinements_planning` plan.
+
+### Cron-per-Task scheduling (one-shot launchd plists)
+
+- **What:** Alternative to adaptive polling: when a Task's `Schedule Date` is set, the executor (or `notion_processor.py`) generates a one-shot launchd plist that fires exactly at that time. Removes the 60s polling ceiling.
+- **Why deferred:** Adaptive polling at 60s ceiling is fine for personal-scale latency. Cron-per-Task adds plist proliferation, orphan-cleanup logic on Task edits/deletes, FDA/launchctl perms on the executor, and timezone/sleep-edge-case complexity. Negative ROI until polling actually bites.
+- **When to revisit:** When a Task type needs exact-time precision (e.g. "send at 09:00:00") that 60s polling can't deliver, AND polling itself becomes a real cost or contention problem.
+- **Source:** `arch_refinements_planning` plan.
+
+### Per-Target Time Budget defaults / learned tuning
+
+- **What:** Replace the flat 120s default for `Time Budget` with per-Target defaults (e.g. Gmail=60, Calendar=30, Notion=120, Browser=300, Manual=0). Phase 4+ extension: auto-tune defaults from observed completion times in Reflections.
+- **Why deferred:** The flat 120s default is a simpler v1 that bins all Tasks the same. Per-Target tuning is premature optimization without Phase 2 completion-time data to back the numbers.
+- **When to revisit:** After a few weeks of Phase 2 data, if Reflection clusters show the flat default is consistently too short for one Target and too long for another. Make the numbers data-driven, not assumed.
+- **Source:** `arch_refinements_planning` plan.
+
+### Working Memory persistence (file + Notion hybrid)
+
+- **What:** Persist the executor's per-Task scratchpad across attempts. Local append-only file (`logs/working_memory/<task_id>.jsonl`) holds the full reasoning trail; Notion `Resumption Context` field holds an LLM-summarized human-readable snapshot. On resume → load both back into the prompt.
+- **Why deferred:** Only relevant under Option A (suspend/resume execution). Phase 2 is deadline-only — Working Memory is in-memory and dies with the execution attempt.
+- **When to revisit:** Ship with **Suspended status + Resumption Context + round-robin quantum**.
+- **Source:** `arch_refinements_planning` plan.
+
+---
+
+## Other product / infra deferrals
+
+### Notion AI subscription (Plus add-on, or Business tier) — **[DECLINED 2026-05-23]**
+
+- **What was on the table:** Notion Plus + AI add-on ($8 + $8 = $16/mo) or Business ($15/mo) for unlimited Notion AI responses, AI database properties, AI Meeting Notes, Notion Agent.
+- **Why declined:** `src/notion_processor.py` now calls an LLM directly via OpenRouter (~$0.05/mo at current usage) instead of routing through Notion AI. The architectural constraint that "Tasks are written by a separate process, not Hermes" is preserved — the extractor process happens to use OpenRouter rather than Notion's hosted LLM. No Notion AI subscription is required for the current architecture.
+- **What you give up:** the in-Notion "highlight text → Ask AI" manual fallback (free trial gives ~20 responses per workspace, ever). Manual extraction inside Notion is no longer the daily fallback — `tests/manual/03_extractor_dry_run.py` plays that role and costs ~$0.002 per run.
+- **When to revisit:** If you specifically want AI Meeting Notes' in-Notion live transcript UI (vs. the DIY Whisper ingester below), Business at $15/mo gives that. Re-evaluate only when meeting capture is a daily concern.
+- **Source:** Phase 1.5 architecture discussion, 2026-05-23.
+
+### DIY meeting ingester (Whisper + local recording)
+
+- **What:** Sibling to `src/ingestion.py`. Watch a folder for new `.m4a`/`.wav` recordings, transcribe via Whisper (local or API), create a `Kind=Meeting Notes` page in Notion. From there, the existing Phase 2 pipeline picks it up — `notion_processor.py` invokes Notion AI to extract Draft Tasks.
+- **Why deferred:** No meetings in the Phase 1/2 critical path. Architecture supports it via the existing `Meeting Notes` content kind; just no producer for that kind yet.
+- **When to revisit:** When meetings become a recurring source of action items. Cost: ~$3/mo for Whisper API at typical volume, or $0 with local Whisper.
+- **Source:** Notion plan-selection conversation; alternative to Business tier upgrade above.
+
+### Conversation Cache (sliding-window conversation memory)
+
+- **What:** A second memory layer alongside Working Memory: holds the last N user/agent turns from interactive chat (Telegram / Slack / CLI), feeds them into Hermes's prompt as `RECENT` context.
+- **Why deferred:** Hermes is a background daemon in Phase 2 — no interactive chat surface. Working Memory (per-Task scratchpad) is the only relevant memory layer.
+- **When to revisit:** When the Hermes messaging gateway ships ([PLAN.md](PLAN.md) line 64) — Telegram, Slack, or Discord. At that point, conversations are real and a turn cache earns its keep.
+- **Source:** `arch_refinements_planning` plan.
 
 ---
 

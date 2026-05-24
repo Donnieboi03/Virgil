@@ -8,9 +8,12 @@ python-dotenv>=1.0
 pydantic>=2.7
 tenacity>=8.5
 
+# ─── Phase 1.5 (Daily Briefing → Draft Tasks extractor) ───────────────────────
+openai>=1.40            # OpenRouter (OpenAI-compatible endpoint)
+google-genai>=1.0       # Google AI Studio (Gemini)
+
 # ─── Week 2 (uncomment before starting Week 2 sprint) ─────────────────────────
 # composio-core>=0.5
-# openai>=1.40          # used for OpenRouter (OpenAI-compatible endpoint)
 # hermes-agent>=2026.5  # pin to the exact version you install
 
 # ─── Week 5 (uncomment before starting Week 5 sprint) ─────────────────────────

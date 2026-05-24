@@ -30,7 +30,7 @@ This plan is the living architecture reference. `NEXTSTEPS.md` is the human-side
 │  │   Notes    Tasks    Contacts    Projects                    │ │
 │  │   Opportunities     Decisions                               │ │
 │  │                ▲                                            │ │
-│  │           Notion AI (single-doc parser)                     │ │
+│  │           Extractor (notion_processor.py)                   │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                                                                  │
 │  ┌─────────────────────────────────────────────────────────────┐ │
@@ -49,7 +49,7 @@ Three runtime processes:
 | Process | Trigger | Responsibility |
 |---|---|---|
 | `src/ingestion.py` | Cron 05:00 daily | News + Gmail inbox + Calendar → Notion Daily Briefing |
-| `src/executor.py` (Week 2+) | Hermes daemon, polls 1-5 min | Task execution loop |
+| `src/executor.py` (Week 2+) | Long-running daemon (launchd `KeepAlive=true`); adaptive polling on Tasks `Schedule Date` with a 60s ceiling | Task execution loop |
 | `src/mirror_sync.py` (Week 5+) | Cron every 15 min | Notion → Obsidian one-way archive |
 
 ---
@@ -86,11 +86,11 @@ virgil-vault/
 obsidian-semantic-memory MCP server runs over the whole vault, exposing hybrid semantic + BM25 + graph search to Hermes.
 
 ### Notion Foundation (Human UI)
-The cockpit. You read and approve here. Notion AI parses single documents into structured outputs. Hermes reads Tasks and writes Notes/Reflections here.
+The cockpit. You read and approve here. An LLM-backed extractor process (`src/notion_processor.py`) parses single documents into structured outputs. Hermes reads Tasks and writes Notes/Reflections here.
 
 Six databases (see schemas in Section 4).
 
-**Hard rule:** Notion AI owns initial single-doc extraction. Hermes owns cross-document reasoning, deduplication, state transitions, and memory enrichment.
+**Hard rule:** the extractor process (`src/notion_processor.py`) owns initial single-doc extraction. Hermes owns cross-document reasoning, deduplication, state transitions, and memory enrichment.
 
 ### Composio (OAuth Vault)
 Holds OAuth tokens for all SaaS integrations so Virgil never manages token refresh. Exposes actions as MCP tools that Hermes consumes.
@@ -111,10 +111,10 @@ Browser scope at MVP: **read-only on public news/research domains. No auth flows
    Output:  Notion Notes row, Kind=Daily Briefing
    Code:    src/ingestion.py
 
-2. PROCESSING  (Notion AI, on note creation)
-   Input:   Any new Note
+2. PROCESSING  (extractor, chained after ingestion)
+   Input:   Daily Briefing page (or any single-doc Note)
    Output:  Draft Tasks (Status=Draft), extracted Contact candidates
-   Who:     Notion AI (single-doc)
+   Who:     notion_processor.py (single-doc, via src/llm.py)
 
 3. APPROVAL GATE  (human, async)
    Tier 0   → auto-approved immediately
@@ -122,16 +122,26 @@ Browser scope at MVP: **read-only on public news/research domains. No auth flows
    Tier 2   → Status=Pending Approval, human taps Approve per-row or batch
    Tier 3   → agent never executes; writes research note only
 
-4. EXECUTION  (Hermes daemon, polls 1-5 min)
-   - Check WIP capacity (max N in Processing, configurable)
-   - Check DLQ depth (throttle if > 20 open failures)
-   - Pull next Approved task sorted by Eisenhower quadrant
-   - Write External Action ID to row (idempotency anchor)
-   - Set Status=Processing
-   - Execute via Composio MCP / direct API / Hermes browser
-   - On success → Status=Executed, write Reflection, update Contact, refine Skill
-   - On transient failure → requeue, retry_count++ (max 3 attempts)
-   - On other failure → Status=Failed, set Failure Category, surface in DLQ view
+4. EXECUTION  (Hermes long-running daemon; adaptive polling)
+   Polling shape (per loop):
+     due_now   = Tasks WHERE Status=Approved AND Schedule_Date <= now()
+     if due_now: process_one(); continue        # cascade through anything due
+     next_fire = MIN(Schedule_Date) WHERE Status=Approved
+     sleep min(next_fire - now, 60s)            # 60s is the ceiling, not the cadence
+
+   Per-Task processing:
+     - Check DLQ depth (throttle if > 20 open failures)
+     - Pull next Approved task sorted by Eisenhower quadrant, then Schedule_Date
+     - Write External Action ID to row (idempotency anchor)
+     - Set Status=Processing
+     - Execute via Composio MCP / direct API / Hermes browser, bounded by Time Budget (default 120s)
+     - On success                  → Status=Executed,            write Reflection
+     - On Time Budget expiry       → Status=Failed, Failure=Timeout,         write Reflection
+     - On Missing Context / Refused / Hard Error → Status=Failed, set Category, write Reflection
+     - On Transient failure        → tenacity-backed in-budget backoff; if budget exhausts mid-retry, fall through to Timeout
+
+   Reflection is written for *every* terminal state (success or failure of any category)
+   per the Reflection policy below. WIP enforcement is deferred — see BACKLOG.
 
 5. DLQ REVIEW  (human, weekly + on-demand)
    DLQ = saved filter view on Tasks DB (Status=Failed)
@@ -148,16 +158,42 @@ Browser scope at MVP: **read-only on public news/research domains. No auth flows
 
 | Category | Examples | Handling |
 |---|---|---|
-| Transient | Gmail 503, rate limit, timeout | Auto-retry, exponential backoff, max 3 |
+| Transient | Gmail 503, rate limit, network blip | In-budget `tenacity` retry with exponential backoff. If retries exhaust the Time Budget → Timeout. |
 | Missing Context | "Email Sarah" but no email on file | DLQ immediately, Failure Category = Missing Context |
 | Refused / Safety | Tier 3 task, agent self-declined | DLQ as "needs explicit approval" |
 | Hard Error | Malformed task, contradictory instructions | DLQ as "needs reformulation" — retry guaranteed to fail |
+| Timeout | Time Budget exceeded before completion | DLQ with Failure Category = Timeout. No auto-retry; user decides Bump-Budget / Reformulate / Drop. |
 
-Only Transient retries automatically. The others go to DLQ immediately.
+Only Transient retries automatically, and only within the current Time Budget. Every other category goes straight to DLQ.
 
 ### Idempotency
 
 Every external action gets an `External Action ID` written to the Task row *before* execution. On any retry, Hermes checks whether the ID was already applied successfully before re-executing. Prevents duplicate sends.
+
+### Reflection policy
+
+**Capture > filter.** Every terminal state (success or failure of any category, including Transient) writes a Reflection. Category determines reflection content and downstream routing in the weekly Learning step, never whether a reflection exists. Filtering signal at capture time forecloses analysis we don't yet know we need.
+
+One template, content scales by category:
+
+| Category | Reflection content |
+|---|---|
+| Success | What was done, what worked, learnings, optional Skill update |
+| Transient | Which API, error code(s), retry count, backoff timeline, what concurrent Tasks were running. Useful for capacity / contention signals at the cluster level. |
+| Missing Context | What the agent tried, where it broke, what context would have helped (Contact entry, Project doc, etc.) |
+| Refused / Safety | Why the agent declined; whether Risk Tier was mis-assigned at extraction |
+| Hard Error | What was malformed; how the extraction prompt could have caught this |
+| Timeout | What was being attempted when the budget hit, whether Time Budget should be bumped, or the Task should be split |
+
+Routing at the weekly Learning step (see step 6 of the Execution Loop):
+
+- Transient clusters → infra / capacity / batching signal
+- Missing Context clusters → data signal (enrich Contacts, Projects)
+- Refused clusters → policy signal (adjust default Risk Tier)
+- Hard Error clusters → extraction prompt signal (edit `prompts/notion_processor_extract.md`)
+- Timeout clusters → budget signal (raise default Time Budget, or per-Target defaults if a pattern emerges — see BACKLOG)
+
+Reflections are dual-written to Notion Notes (`Kind=Task Reflection`) and Obsidian (`reflections/<date>-<task-id>-<status>.md`) per the Content drift table.
 
 ---
 
@@ -170,7 +206,29 @@ Every external action gets an `External Action ID` written to the Task row *befo
 | 2 | Approval | Send email, book confirmed meeting, post to Slack | Status=Pending Approval; Approve button per-row or batch view |
 | 3 | Manual | Sign anything, pay anything, legally irreversible | Agent never executes; writes research note with options |
 
-Notion AI assigns initial tier on Task creation (defaults to Tier 2 when uncertain). User can override on review.
+The extractor assigns initial tier on Task creation (defaults to Tier 2 when uncertain). User can override on review.
+
+---
+
+## Eisenhower → Default Schedule Date
+
+When the extractor creates a Task, the Eisenhower quadrant determines the default `Schedule Date`. The agent can override per-Task; this is just the default.
+
+| Eisenhower | Default Schedule Date | Notes |
+|---|---|---|
+| Q1 Urgent + Important | `now` | Picked up on the next executor poll cycle |
+| Q2 Important, Not Urgent | `now + 2 days` | Deliberately deferred — agent gets lead time to do it well |
+| Q3 Urgent, Not Important | `now` | Auto-pilot lane; usually Risk Tier 0-Auto |
+| Q4 Neither Urgent nor Important | **skip — do not create a Task** | Mentioned once in the extraction output for visibility, not promoted to a Task row |
+
+Risk Tier and Eisenhower are **orthogonal**:
+
+- **Eisenhower** = priority axis (when + how important)
+- **Risk Tier** = delegation axis (who acts and with what approval)
+
+The extractor sets both at extraction time. A typical Q2 Task defaults to Risk Tier 1-Draft (delegate to agent, you confirm); a typical Q1 Task defaults to Risk Tier 2-Approval (you decide in the moment); Q3 often lands at 0-Auto. The user always overrides on review.
+
+`Schedule Date` is the only thing the scheduler checks. Once the row exists, the executor doesn't care which quadrant it came from — only whether `Schedule_Date <= now()`. This decoupling lets you snooze a Q1 task (push `Schedule Date` out) without changing its quadrant.
 
 ---
 
@@ -180,19 +238,19 @@ Bidirectional sync is never used. Mirror direction is always Notion → Obsidian
 
 | Content kind | Canonical store | Writer(s) | Mirror to Obsidian? |
 |---|---|---|---|
-| Meeting Notes | Notion | Notion AI | Yes — archive copy |
+| Meeting Notes | Notion | Extractor (`notion_processor.py`) | Yes — archive copy |
 | Daily Briefings | Notion | Hermes (ingestion.py) | Yes — archive copy |
-| Tasks | Notion | Notion AI creates, Hermes sets status only | No (Hermes reads via API) |
-| Contacts (metadata) | Notion | Notion AI extracts, Hermes enriches | Yes — enriched .md per person |
+| Tasks | Notion | Extractor creates (via `src/notion_processor.py` from any single-doc source: Briefings, Meeting Notes, Opportunities). Hermes reads + sets `Status`, `System Log`, `Retry Count`, `Failure Category`, `Failure Reason`, `First/Last Failed At` only. | No (Hermes reads via API) |
+| Contacts (metadata) | Notion | Extractor extracts, Hermes enriches | Yes — enriched .md per person |
 | Projects | Notion | Human creates | Yes — Hermes adds intelligence layer |
-| Opportunities | Notion | Human or Notion AI | Yes — Hermes adds pipeline context |
+| Opportunities | Notion | Human or extractor | Yes — Hermes adds pipeline context |
 | Decisions | Notion | Human | Yes — mirror copy |
 | **Skills** | **Obsidian only** | Hermes (GEPA) | Never to Notion |
 | **People intelligence** | **Obsidian only** | Hermes | Never to Notion |
 | **Long-term memory** | **Obsidian only** | Hermes | Never to Notion |
 | Reflections | Both (dual-write, immutable) | Hermes | Written to both simultaneously |
 
-Notion AI never touches Obsidian-owned content. Hermes never edits Notion content except:
+The extractor process never touches Obsidian-owned content. Hermes never edits Notion content except:
 - Task `Status` fields (state transitions only)
 - `System Log` on Tasks
 - `Last Interaction` + `Context Summary` on Contacts
@@ -208,7 +266,7 @@ One database for all written context. `Kind` field distinguishes types.
 
 | Property | Type | Notes |
 |---|---|---|
-| `Title` | Title | Auto-generated by Notion AI or Hermes |
+| `Title` | Title | Auto-generated by the extractor or Hermes |
 | `Kind` | Select | Daily Briefing / Meeting Notes / Task Reflection / Weekly Reflection |
 | `Date` | Date | |
 | `Body` | (page body) | Full content lives in page body, not a column |
@@ -226,12 +284,13 @@ One database for all written context. `Kind` field distinguishes types.
 | `Target` | Select | Gmail / Calendar / Notion / Browser / Manual |
 | `Risk Tier` | Select | 0-Auto / 1-Draft / 2-Approval / 3-Manual |
 | `Status` | Select | Draft / Approved / Processing / Executed / Failed / DLQ-Resolved |
-| `Eisenhower` | Select | Q1 Urgent+Important / Q2 Important / Q3 Urgent / Q4 Neither |
-| `WIP Slot` | Number | Counts against concurrency limit when in Processing |
+| `Eisenhower` | Select | Q1 Urgent+Important / Q2 Important / Q3 Urgent / Q4 Neither. See "Eisenhower → Default Schedule Date" above. |
+| `Schedule Date` | Date (with time) | When this Task becomes eligible for execution. Default set by the extractor from Eisenhower (Q1/Q3 = now, Q2 = +2 days, Q4 = not created). Editing this is how you snooze or expedite work. |
+| `Time Budget` | Number (seconds) | Hard deadline for a single execution attempt. **If blank, executor uses 120s.** On expiry → `Status=Failed`, `Failure Category=Timeout`. The extractor may set this explicitly when a Task is obviously large. |
 | `External Action ID` | Text | Idempotency key, written before execution |
-| `Failure Category` | Select | Transient / Missing Context / Refused / Hard Error / None |
+| `Failure Category` | Select | Transient / Missing Context / Refused / Hard Error / **Timeout** / None |
 | `Failure Reason` | Text | What Hermes observed |
-| `Retry Count` | Number | |
+| `Retry Count` | Number | **Manual DLQ retries only.** In-budget transient backoff is agent-internal (via `tenacity`) and not surfaced here — see the Reflection for that detail. |
 | `First Failed At` | Date | |
 | `Last Failed At` | Date | |
 | `Resolution Action` | Select | Retry / Clarify / Approve+Retry / Reformulate / Drop |
@@ -240,10 +299,13 @@ One database for all written context. `Kind` field distinguishes types.
 | `Opportunity` | Relation → Opportunities | |
 | `Contacts` | Relation → Contacts | Multi |
 | `Created` | Created time | Auto |
+| ~~`WIP Slot`~~ | ~~Number~~ | **Deferred — see [BACKLOG.md](BACKLOG.md).** Single-threaded executor in Phase 2 makes this meaningless; revisit when parallel sub-agents ship. |
 
 **DLQ view** = saved filter on Tasks where `Status = Failed`, grouped by `Failure Category`. One-tap resolution buttons per row.
 
 **Approve batch view** = saved filter where `Status = Pending Approval`, sorted by `Eisenhower`.
+
+**Active work view** filters `Status NOT IN (Executed, DLQ-Resolved)` so resolved failures don't clutter the queue while remaining queryable for history.
 
 ### 3. Contacts
 
@@ -265,7 +327,7 @@ One database for all written context. `Kind` field distinguishes types.
 | `Decisions` | Relation → Decisions | |
 | `Created` | Created time | Auto |
 
-Contact dedup rule: Notion AI creates candidate Contacts. Hermes runs a daily reconciliation pass, merging candidates against existing entries by email → company → name match. Ambiguous merges surface as Tasks for human review.
+Contact dedup rule: the extractor creates candidate Contacts. Hermes runs a daily reconciliation pass, merging candidates against existing entries by email → company → name match. Ambiguous merges surface as Tasks for human review.
 
 ### 4. Projects
 
@@ -316,22 +378,51 @@ Founder-grade decision log. Captures the reasoning at decision time and the actu
 | `Opportunity` | Relation → Opportunities | Optional |
 | `Contacts` | Relation → Contacts | Who was involved |
 
-Notion AI prompts retrospective fills monthly via a cron-triggered Task.
+A scheduled extractor invocation prompts retrospective fills monthly via a cron-triggered Task.
 
 ---
 
-## Notion AI responsibilities
+## Extractor responsibilities
 
-Notion AI is the single-document parser. It never touches cross-document reasoning or state machines.
+The extractor process (`src/notion_processor.py`) is the single-document parser. It calls an LLM via `src/llm.py` (OpenRouter or Gemini). It never touches cross-document reasoning or state machines.
 
-| Trigger | Notion AI action |
+| Trigger | Extractor action |
 |---|---|
 | New Meeting Notes page | Extract action items as Draft Tasks, extract Contact candidates |
 | New Daily Briefing | Summarize into task suggestions for any time-sensitive items |
 | New Opportunity created | Suggest next-action Task |
 | Monthly cron Task | Prompt decision retrospective fills on Decisions with empty Actual Outcome |
 
+At extraction time, the extractor also:
+
+- Assigns `Eisenhower` quadrant per item (Q1 / Q2 / Q3 / Q4)
+- Assigns default `Risk Tier` (Tier 2 when uncertain)
+- Sets default `Schedule Date` per the Eisenhower → Default Schedule Date table (and skips Q4 items entirely)
+- Optionally sets `Time Budget` when the work is obviously large; otherwise leaves it blank and the executor falls back to 120s
+
 Hermes does: cross-document dedup, Contact enrichment, Task state transitions, Obsidian writes, skill refinement, DLQ management.
+
+---
+
+## Working Memory (Phase 2 model)
+
+The executor's per-Task scratchpad — the agent's "what am I currently doing and how far have I gotten" memory.
+
+**Phase 2 shape:** in-memory only. A `dict[task_id, list[ScratchpadEntry]]` lives inside the `src/executor.py` process. Lifetime is **one execution attempt** — born when a Task moves to `Status=Processing`, dies when the Task reaches a terminal state (success, any failure, or Timeout).
+
+What lives where:
+
+| State | Where it lives | Why |
+|---|---|---|
+| Active scratchpad (Task currently running) | In-memory dict in the executor process | Fast, no I/O during execution |
+| Reasoning trail of a completed Task | Reflection note in Obsidian + Notion Notes (`Kind=Task Reflection`) | Long-term memory; in-memory dict is cleared |
+| Reasoning trail of a failed Task | Reflection note (same locations) | Failure detail for the weekly Learning cluster pass |
+
+Working Memory is **not** persisted across execution attempts in Phase 2. If a Task fails and is later retried via DLQ Resolution, the new attempt starts fresh — the prior reasoning lives only in the Reflection note.
+
+Suspend/resume (Option A in the design discussion) is deferred — see [BACKLOG.md](BACKLOG.md). The trigger to upgrade: Tasks routinely exceeding their Time Budget even after bumps, indicating work that genuinely spans multiple sessions. Until that signal appears, deadline-only execution + a fresh start on retry is the simpler, cheaper model.
+
+This is also why there's no `Resumption Context` or `Status=Suspended` in the schema today. Both are valid future additions but unjustified by current signal.
 
 ---
 
@@ -481,11 +572,12 @@ virgil/
 
 ## Cost at steady state
 
+Extraction via `src/llm.py` typically costs under $1/month at one briefing per day (Gemini Flash or OpenRouter mini).
+
 | Service | Cost/month | Required from |
 |---|---|---|
-| Notion AI | $10 | Week 2 |
 | Composio | $0-20 | Week 2 (free tier likely sufficient solo) |
-| OpenRouter (LLM) | $20-40 | Week 2 |
+| LLM (OpenRouter or Gemini via `src/llm.py`) | $1-40 | Phase 1.5 extraction; Hermes Week 2+ |
 | Obsidian | $0 | Week 5 (Obsidian Sync $5 optional) |
 | Hermes | $0 | Week 2 (open source) |
 | VPS (optional) | $5-10 | Month 2+ if laptop sleeps overnight |
@@ -514,8 +606,8 @@ virgil/
 | Task stuck in Processing | Executor crashed mid-loop | Check `logs/executor.err`, restart daemon |
 | Email sent twice | External Action ID not written before execution | Enforce ID write in executor before any Composio call |
 | Composio 400 Unauthorized | OAuth token expired in Composio | Reconnect integration in Composio dashboard |
-| Duplicate Contacts | Notion AI extracted same person from two meeting notes | Run Hermes dedup job manually; add email to both entries first |
+| Duplicate Contacts | The extractor extracted same person from two meeting notes | Run Hermes dedup job manually; add email to both entries first |
 | DLQ growing unchecked | Executor failing silently | Check `logs/executor.err`; review DLQ view |
 | Apple alarm never fires | Shortcut set to "Ask Before Running" | Toggle to "Run Immediately" in Shortcuts app |
 | Notion rate limit 429 | Multiple processes hitting Notion simultaneously | Shared token-bucket rate limiter in `notion_client.py` enforces 3 req/sec |
-| Content drift: Notion AI rewrites a Task title Hermes references | Task ID reference broken | Hermes always references Task by Notion page ID, never by display title |
+| Content drift: the extractor rewrites a Task title Hermes references | Task ID reference broken | Hermes always references Task by Notion page ID, never by display title |

@@ -157,7 +157,28 @@ def main() -> None:
         schedule_md=schedule_md,
     )
 
-    print(f"[ingestion] done — briefing page {page_id}")
+    print(f"[ingestion] briefing page {page_id}")
+
+    # Phase 1.5: chained extraction. The briefing has landed at this point,
+    # so any extractor failure degrades gracefully — you fall back to manual
+    # extraction in Notion for the day. We intentionally swallow every
+    # exception here for that reason.
+    try:
+        from .notion_processor import extract_from_page
+
+        print("[ingestion] extracting Draft Tasks...")
+        result = extract_from_page(page_id)
+        print(
+            f"[ingestion] extracted {result.tasks_written} Draft Tasks"
+            + (f" — {result.skipped_notes}" if result.skipped_notes else "")
+        )
+    except Exception as exc:
+        print(
+            f"[ingestion] WARN extractor failed (briefing already landed): {exc}",
+            file=sys.stderr,
+        )
+
+    print("[ingestion] done")
 
 
 if __name__ == "__main__":

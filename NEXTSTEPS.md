@@ -10,12 +10,12 @@ Estimated total time: **~70 minutes** spread across whenever you have access to 
 
 ## Current progress
 
-_Last updated: 2026-05-22_
+_Last updated: 2026-05-23_
 
 - [x] **Phase 0 — Notion** (Notes + Tasks only; Contacts/Projects/Opportunities/Decisions deferred per their `(can defer …)` labels)
 - [x] **Phase 1 — Google Cloud** — OAuth, first briefing, launchd at 08:00; manual `launchctl start` verified in Notion
-- [ ] **Phase 1.5 — Notion AI -> Draft Tasks bridge** (~20 min Notion-side; helper code lands in Phase 2)
-- [ ] Phase 2 — Composio + OpenRouter + Hermes (Week 2)
+- [ ] **Phase 1.5 — Daily Briefing -> Draft Tasks** (code shipped; awaiting OpenRouter signup + Notion column additions + smoke checkpoints)
+- [ ] Phase 2 — Composio + Hermes (Week 2)
 - [ ] Phase 3 — iPhone Shortcut (anytime after Phase 1)
 
 The four deferred DBs (Contacts, Projects, Opportunities, Decisions) are not required for Week 1. When you create them, come back and fill in the matching `*_DB_ID` rows in `.env`, share each with the `Virgil Agent` integration, and tick the boxes in Phase 0 Steps 2 and 4.
@@ -68,11 +68,12 @@ Status:
 | `Risk Tier` | Select — options: `0-Auto`, `1-Draft`, `2-Approval`, `3-Manual` |
 | `Status` | Select — options: `Draft`, `Approved`, `Processing`, `Executed`, `Failed`, `DLQ-Resolved` |
 | `Eisenhower` | Select — options: `Q1 Urgent+Important`, `Q2 Important`, `Q3 Urgent`, `Q4 Neither` |
-| `WIP Slot` | Number |
+| `Schedule Date` | Date *(include time)* — when this Task becomes eligible for execution. Notion AI sets a default from Eisenhower (Q1/Q3 = now, Q2 = +2 days). Edit to snooze or expedite. |
+| `Time Budget` | Number *(seconds)* — hard deadline per execution attempt. **Leave blank for default 120s.** Notion AI may set this when a Task is obviously large. |
 | `External Action ID` | Text |
-| `Failure Category` | Select — options: `Transient`, `Missing Context`, `Refused`, `Hard Error`, `None` |
+| `Failure Category` | Select — options: `Transient`, `Missing Context`, `Refused`, `Hard Error`, `Timeout`, `None` |
 | `Failure Reason` | Text |
-| `Retry Count` | Number |
+| `Retry Count` | Number *(manual DLQ retries only — in-budget transient backoff is agent-internal and lives in the Reflection)* |
 | `First Failed At` | Date |
 | `Last Failed At` | Date |
 | `Resolution Action` | Select — options: `Retry`, `Clarify`, `Approve+Retry`, `Reformulate`, `Drop` |
@@ -80,11 +81,13 @@ Status:
 | `Project` | Relation → Projects *(add after Projects DB exists)* |
 | `Opportunity` | Relation → Opportunities *(add after Opportunities DB exists)* |
 | `Contacts` | Relation → Contacts *(add after Contacts DB exists)* |
+| ~~`WIP Slot`~~ | ~~Number~~ — **optional, deferred to BACKLOG.** Phase 2 executor is single-threaded; this only matters when parallel sub-agents ship. Skip for now. |
 
-**After creating Tasks:** add two saved views:
+**After creating Tasks:** add three saved views:
 
 - **DLQ view**: filter `Status = Failed`, group by `Failure Category`, name it "DLQ"
 - **Approve queue**: filter `Status = Approved`, sort by `Eisenhower` ascending, name it "Approve Queue"
+- **Active work**: filter `Status` is none of `Executed` or `DLQ-Resolved`, name it "Active". Keeps resolved failures out of your main view while still queryable for history.
 
 ---
 
@@ -217,11 +220,9 @@ For every database you've created:
 
 ---
 
-### Step 5: Enable Notion AI *(needed by Week 2)*
+### Step 5: ~~Enable Notion AI~~ → **LLM API key (optional at Phase 0; required by Phase 1.5)**
 
-Go to **Settings → Plans** in your Notion workspace and enable Notion AI ($10/month). Not needed for Week 1 (the ingestion script writes directly via API), but required before the Week 2 sprint.
-
-- [ ] Notion AI enabled
+Extraction uses [`src/llm.py`](src/llm.py). Set **either** `GOOGLE_API_KEY` (Gemini) **or** `OPENROUTER_API_KEY` — see Phase 1.5 Step 2 for details. No Notion AI subscription required.
 
 ---
 
@@ -380,85 +381,139 @@ Should show `com.virgil.ingestion`. The briefing will now run automatically at t
 
 ---
 
-## Phase 1.5 — Notion AI -> Draft Tasks bridge (~20 min Notion-side; helper code lands in Phase 2)
+## Phase 1.5 — Daily Briefing -> Draft Tasks (code shipped; activate it)
 
-This is where briefings turn into actionable Tasks. The actual script (`src/notion_processor.py`) lands in Phase 2; the steps below set up everything on the Notion side so the script has somewhere to write.
+Code shipped 2026-05-23 via the `phase_15_extractor_build` plan. The pipeline is wired end-to-end; only the manual setup (OpenRouter signup + Notion column additions) and the bottom-up smoke checkpoints are left.
 
-> **Architectural rule (from [PLAN.md](PLAN.md) lines 89, 185, 195-199):** Notion AI is the only writer of new Tasks. **Hermes never creates Tasks** — it only reads Tasks with `Status=Approved` and updates `Status` / `System Log` / Reflections. This bridge is a standalone helper — **not Hermes** — so the actor's context stays clean.
+> **Architectural rule (preserved):** The **extractor process** (`src/notion_processor.py`) is the only writer of new Task rows. **Hermes never creates Tasks** — it only reads Tasks with `Status=Approved` and updates `Status` / `System Log` / `Retry Count` / `Failure Category` / `Failure Reason` / `First/Last Failed At` plus Reflections.
 
-### Step 1: Confirm Notion AI is enabled
+### Step 1: Pip install the new dep
 
-Cross-reference Phase 0 Step 5 ($10/mo, required from Week 2). The processor cannot run without it.
+The extractor uses the `openai` SDK (which speaks OpenRouter's API natively via `base_url`). It was added to `requirements.txt` in the build.
 
-- [ ] Notion AI subscription active
+```bash
+cd /Users/donnieb/Desktop/Code/Virgil
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
----
-
-### Step 2: Confirm Tasks DB is shared with the Virgil Agent integration
-
-Cross-reference Phase 0 Step 4. The processor needs `Status=Draft` write access to the Tasks DB.
-
-- [ ] Tasks DB shows `Virgil Agent` under Connections
+- [ ] `openai` installed (`python -c "import openai; print(openai.__version__)"` works)
 
 ---
 
-### Step 3: Manual day-one fallback
+### Step 2: LLM API key (OpenRouter **or** Gemini)
 
-Until `src/notion_processor.py` ships, extract tasks by hand to keep the muscle memory:
+Extraction uses [`src/llm.py`](src/llm.py): **OpenRouter if `OPENROUTER_API_KEY` is set, else Gemini if `GOOGLE_API_KEY` is set.** You only need one.
 
-1. Open today's **Daily Briefing** page in Notion.
-2. Highlight the **Inbox** (or **Schedule**) section → **Ask AI** → paste:
-   > Extract action items as a markdown bullet list. For each item include: who, what, by when, target (one of Gmail / Calendar / Notion / Browser / Manual).
-3. Open the **Tasks** DB → create one Draft row per extracted item, filling `Task Name`, `Context`, `Target`, and a guess at `Risk Tier` (default `2-Approval` when unsure).
+**Option A — Gemini (Google AI Studio)** — recommended if you already have a Google API key:
 
-This is the same shape `src/notion_processor.py` will automate in Phase 2 — doing it manually a few times will inform the prompt template in Step 4.
+1. [aistudio.google.com](https://aistudio.google.com) → Get API key
+2. In `.env`: `GOOGLE_API_KEY=...`
+3. Optional: `GEMINI_MODEL=gemini-2.5-flash` (default) or `gemini-3.0-flash` if your account supports it
+4. Leave `OPENROUTER_API_KEY` blank
 
-- [ ] Tried manual extraction on at least one briefing
+**Option B — OpenRouter:**
 
----
+1. [openrouter.ai](https://openrouter.ai) → Keys → add credit → copy key
+2. In `.env`: `OPENROUTER_API_KEY=sk-or-v1-...`
+3. `LLM_MODEL=openai/gpt-4.1-mini` (default) or another OpenRouter model id
 
-### Step 4: Draft the extraction prompt template
+Optional override: `LLM_PROVIDER=gemini` or `openrouter` to force a provider.
 
-Before code, lock down what the helper will ask Notion AI for. The prompt will eventually live at `prompts/notion_processor_extract.md` (file created in Phase 2). Spec:
-
-- **Input:** the full body of one Daily Briefing page (or Meeting Notes page).
-- **Output:** JSON array. Each item:
-  - `task_name` — short imperative ("Reply to Sarah re: Acme contract")
-  - `context` — 1-3 sentences with enough detail for Hermes to execute without re-reading the source
-  - `target` — one of `Gmail` / `Calendar` / `Notion` / `Browser` / `Manual`
-  - `risk_tier` — one of `0-Auto` / `1-Draft` / `2-Approval` / `3-Manual` (default `2-Approval` when unclear)
-  - `eisenhower` — one of `Q1 Urgent+Important` / `Q2 Important` / `Q3 Urgent` / `Q4 Neither` (default `Q2 Important` when unclear)
-  - `due_date` — ISO date if mentioned, else null
-
-Iterate on this during Phase 2 against real briefings. The first version doesn't have to be perfect.
-
-- [ ] Prompt template drafted (notes captured somewhere; the file itself lands in Phase 2)
+- [ ] At least one of `GOOGLE_API_KEY` or `OPENROUTER_API_KEY` set in `.env`
+- [ ] `pytest tests/integration/test_llm.py --run-integration` passes
 
 ---
 
-### Step 5: Decide invocation pattern (Phase 2)
+### Step 3: Add the new Notion Tasks columns
 
-Pick one before Phase 2 starts:
+These columns are listed in [Phase 0 Step 1 Database 2](#database-2-tasks) but may not exist in your live DB yet. Add them now if absent:
 
-- **Chained:** `src/ingestion.py` calls `src/notion_processor.py` at the end of its run. Simpler, one cron job. If the processor fails, the briefing still lands.
-- **Separate cron:** dedicated launchd job a few minutes after ingestion. More decoupled, more moving parts.
+- [ ] `Schedule Date` — Date type, **include time**
+- [ ] `Time Budget` — Number type, units = seconds
+- [ ] `Failure Category` select option `Timeout` added to the existing options
+- [ ] Saved view **Active work** — filter `Status` is none of `Executed` or `DLQ-Resolved`
 
-- [ ] Decision logged in [BACKLOG.md](BACKLOG.md) or [PLAN.md](PLAN.md)
+If any of these are missing, smoke checkpoint 05 will fail with a clear "missing column" message — it's a faster way to find out than eyeballing the schema.
 
 ---
 
-### Step 6: Implementation tracked in BACKLOG
+### Step 4: Run the smoke checkpoints
 
-See [BACKLOG.md](BACKLOG.md) → "`src/notion_processor.py` — Notion AI bridge for Daily Briefing → Draft Tasks" for the actual code work. It blocks Phase 2 — Tasks DB must start populating before Hermes is useful.
+Three tiers: **unit** (pytest, free), **integration** (pytest with `--run-integration`, ~$0.01), then **manual** scripts for human judgement. See [tests/manual/README.md](tests/manual/README.md) for troubleshooting.
+
+Install dev deps if you haven't:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+Add to `.env` for integration tests:
+
+```
+TEST_BRIEFING_PAGE_ID=<your daily briefing page id>
+```
+
+```bash
+# 1. Unit tier — parser, Eisenhower defaults, properties, blocks renderer, orchestrator mocks
+pytest
+
+# 2. Integration tier — LLM, Notion read, Notion write (auto-archived)
+pytest --run-integration
+
+# 3. LLM dry-run on a real briefing — iterate the prompt here
+python tests/manual/03_extractor_dry_run.py <briefing_page_id>
+# edit prompts/notion_processor_extract.md, re-run, repeat
+
+# 4. Live end-to-end (writes real Drafts)
+python tests/manual/06_processor_end_to_end.py <briefing_page_id>
+
+# 5. Chained ingestion (briefing + extraction in one cron run)
+python tests/manual/07_chained_ingestion.py
+```
+
+Checkpoints to tick off as you go:
+
+- [ ] `pytest` (unit tier) green
+- [ ] `pytest --run-integration` green
+- [ ] 03 Extractor dry-run output looks good (after prompt iteration)
+- [ ] 06 End-to-end PASS, Drafts look right in Notion
+- [ ] 07 Chained ingestion PASS
+
+---
+
+### Step 5: Confirm the unattended cron
+
+After checkpoint 07 passes, the next 08:00 launchd run should produce both a briefing AND Draft Tasks unattended. Check `logs/ingestion.log` after tomorrow morning.
+
+- [ ] Tomorrow's 08:00 cron run produces both a briefing AND Draft Tasks
+- [ ] No errors in `logs/ingestion.log`
+
+---
+
+### Step 6: Iterate the prompt over a few days of real briefings
+
+The extractor's quality is mostly the prompt's quality. After Phase 1.5 is "live," plan to spend ~30 min over the first week tuning `prompts/notion_processor_extract.md`:
+
+- If the extractor over-produces Tasks → tighten the Q4 skip rule or the "no informational items" example
+- If it under-produces → loosen the few-shot examples or add new ones from real failure cases
+- If JSON shape drifts → tighten the schema description
+
+Use `tests/manual/03_extractor_dry_run.py <page_id>` against captured briefings to iterate without writing junk to Notion. Each dry-run is ~$0.002.
+
+- [ ] Prompt iterated to acceptable signal/noise ratio
 
 ---
 
 ## Phase 2 — Composio + OpenRouter + Hermes *(Week 2, do before starting Week 2 sprint)*
 
 > **Architectural reminder before you start Phase 2:**
-> - **Hermes never creates Tasks.** It only reads Tasks with `Status=Approved` and updates `Status` / `System Log` / Reflection notes.
+> - **Hermes never creates Tasks.** It only reads Tasks with `Status=Approved AND Schedule_Date <= now()` and updates `Status` / `System Log` / `Retry Count` / `Failure Category` / `Failure Reason` / `First/Last Failed At` plus Reflection notes.
 > - Task creation is owned by **`src/notion_processor.py`** (a separate, non-Hermes helper) that bridges Daily Briefings → Notion AI extraction → Draft Tasks.
 > - Configure that helper *before* installing Hermes, or Hermes will poll an empty Tasks DB and do nothing.
+> - **Executor model:** `src/executor.py` is a **long-running daemon**, not a periodic cron. Use launchd with `KeepAlive=true` so it restarts on crash and stays up across sleeps. Adaptive polling: sleep until `min(next_due Schedule_Date, now + 60s)`. See [PLAN.md](PLAN.md) "The Execution Loop" → Step 4 for the loop shape.
+> - **Time Budget:** every execution attempt is bounded by the Task's `Time Budget` (default 120s if blank). On expiry → `Status=Failed`, `Failure Category=Timeout`. No suspend/resume in Phase 2 — see [PLAN.md](PLAN.md) "Working Memory" and [BACKLOG.md](BACKLOG.md) for the deferred suspend/resume design.
+> - **Reflections capture every terminal state** (success or any failure category, including Transient). See [PLAN.md](PLAN.md) "Reflection policy."
 
 ### Step 1: Create Composio account
 

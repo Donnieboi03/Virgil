@@ -6,68 +6,99 @@
 
 ---
 
-## Status as of 2026-05-22
+## Status as of 2026-05-24
 
-- **Phase:** Phase 1 **complete** (OAuth, briefing, launchd at 08:00; manual `launchctl start` verified in Notion). Phase 1.5 (Notion AI → Draft Tasks bridge) is next. Phase 2 not started.
+- **Phase:** Phase 1.5 code complete. LLM via [`src/llm.py`](src/llm.py) (Gemini or OpenRouter). Test suite reorganized onto pytest (unit + integration + 3 manual scripts). [`PLAN.md`](PLAN.md) swept — "Notion AI" replaced with extractor-process language throughout. Still needs: user runs `pytest`, `pytest --run-integration`, then manual checkpoints 03/06/07; Notion Tasks columns if not yet added.
 - **Branch:** `main`
-- **Last committed:** `b91b853` — *Update NEXTSTEPS for Phase 0 completion and Phase 1 handoff.*
-- **Working tree:** **dirty** — the `notes_pipeline_polish` plan has been executed but not yet committed. Modified: `.env.example`, `NEXTSTEPS.md`, `scripts/com.virgil.ingestion.plist`, `scripts/install_launchd.sh`, `src/config.py`, `src/ingestion.py`. Untracked: `AGENTS.md`, `BACKLOG.md`, `HANDOFF.md` (this file).
-- **Active plan:** [`~/.cursor/plans/notes_pipeline_polish_58473c71.plan.md`](../../.cursor/plans/notes_pipeline_polish_58473c71.plan.md) — all 6 todos complete, awaiting commit.
-- **Active scheduler:** launchd job **installed** (`com.virgil.ingestion` at **08:00** Mac local time). Manual `launchctl start` verified — briefing lands in Notion. First unattended 08:00 run not yet confirmed.
+- **Last committed:** `fae5e35` — *Polish ingestion pipeline and close Phase 1.*
+- **Working tree:** **very dirty** — multiple uncommitted sessions stacked (arch refinements, Phase 1.5, LLM adapter, test reorg, PLAN sweep). Recommend separate commits per workstream when user asks.
+- **Active plan:** [`~/.cursor/plans/test_reorg_plan_md_sweep_5735729e.plan.md`](../../.cursor/plans/test_reorg_plan_md_sweep_5735729e.plan.md) — all todos complete this session.
+- **Active scheduler:** launchd job installed (`com.virgil.ingestion` at **08:00** Mac local time). Manual `launchctl start` verified — briefing lands in Notion.
 
 ---
 
-## What shipped this session
+## What shipped this session (test reorg + PLAN.md sweep)
 
-Notes pipeline polish (pre-Tasks):
+**PLAN.md vendor decoupling (user-authorized):**
 
-- **News:** Trimmed default RSS feeds to HackerNews only (`https://hnrss.org/frontpage`) in `src/config.py`, `.env.example`, and `.env`. Multiple feeds still supported via comma-separated list.
-- **Inbox query:** `src/ingestion.py` now uses `q="in:inbox (is:unread OR newer_than:1d)"` with `maxResults=10`. Old `is:unread AND newer_than:1d` was too narrow.
-- **Removed action-keyword regex:** Deleted `_ACTION_KEYWORDS` tuple and `flagged` logic from `src/ingestion.py`. The replacement is `src/notion_processor.py` (Phase 2) invoking Notion AI — **not Hermes**.
-- **Customizable schedule:** New `INGESTION_HOUR` / `INGESTION_MINUTE` env vars (default `5` / `0`). `scripts/install_launchd.sh` sources `.env` in a subshell (no parent-env leak), validates ranges, substitutes into the plist template (`HOUR_PLACEHOLDER` / `MINUTE_PLACEHOLDER`), and prints the actual schedule in its summary.
-- **NEXTSTEPS overhaul:** Phase 1 Steps 1-5 ticked; Step 5 has a Troubleshooting block (`access_denied` test-user fix, 7-day refresh-token expiry, `credentials.json` path); Step 6 now references the schedule env vars.
-- **New Phase 1.5 section in NEXTSTEPS:** "Notion AI → Draft Tasks bridge" — 6 steps covering Notion AI enablement, Tasks DB sharing, manual day-one fallback, prompt template spec, invocation pattern decision, BACKLOG pointer.
-- **Phase 2 intro callout in NEXTSTEPS:** Reminds the next agent that Hermes never creates Tasks.
-- **BACKLOG:** Replaced the (mis-wired) "LLM-based inbox triage" entry with `src/notion_processor.py — Notion AI bridge for Daily Briefing → Draft Tasks`. Existing entries for multi-time scheduling and cross-timezone clarity preserved.
+- Replaced ~20 "Notion AI" references with "extractor process" / `src/notion_processor.py` language.
+- Renamed "Notion AI responsibilities" → **Extractor responsibilities**.
+- Removed Notion AI cost row; added note that extraction shares OpenRouter/Gemini with Hermes.
 
-Repo / agent operating layer:
+**pytest test framework:**
 
-- **`AGENTS.md`:** New file at root. Defines the session ritual (read HANDOFF first), the four-doc taxonomy, architectural hard rules from `PLAN.md`, conventions (code, secrets, commits, plans, scheduling), and the project's negative space.
-- **`HANDOFF.md`:** This file. Seeded with current state.
+- [`requirements-dev.txt`](requirements-dev.txt) — `pytest>=8.0`, `pytest-cov>=5.0`
+- [`pyproject.toml`](pyproject.toml) — pytest config, `integration` marker, `pythonpath = ["."]`
+- [`tests/conftest.py`](tests/conftest.py) — `--run-integration` flag, skip integration by default, `fixtures_dir` fixture
+- [`tests/unit/`](tests/unit/) — `test_parser.py`, `test_eisenhower.py`, `test_properties.py`, `test_blocks_to_text.py`, `test_extract_from_page.py`
+- [`tests/integration/`](tests/integration/) — `test_llm.py`, `test_notion_read.py`, `test_notion_write.py`
+- [`tests/fixtures/`](tests/fixtures/) — briefings, llm_responses, notion_blocks captured fixtures
+- Deleted promoted manual scripts: `01_llm_hello.py`, `02_notion_read_page.py`, `04_parser_unit.py`, `05_notion_write_one_task.py`
+- Kept manual: `03_extractor_dry_run.py`, `06_processor_end_to_end.py`, `07_chained_ingestion.py`
+- Updated [`tests/manual/README.md`](tests/manual/README.md) and [NEXTSTEPS.md Phase 1.5 Step 4](NEXTSTEPS.md)
+
+**Day-to-day:**
+
+```bash
+pytest                              # unit tier, free
+pytest --run-integration            # + LLM + Notion (needs .env, TEST_BRIEFING_PAGE_ID)
+python tests/manual/03_extractor_dry_run.py <page_id>   # prompt iteration
+```
+
+---
+
+## What shipped earlier (LLM provider adapter)
+
+- [`src/llm.py`](src/llm.py) — `resolve_provider()` + `complete()`; OpenRouter or Gemini.
+- [`src/notion_processor.py`](src/notion_processor.py) — `call_llm()` delegates to `llm.complete()`.
+- [`src/config.py`](src/config.py) — `GOOGLE_API_KEY`, `GEMINI_MODEL`, optional `LLM_PROVIDER`.
+- User verified Gemini path: `provider=gemini`, PASS.
+
+---
+
+## What shipped earlier (Phase 1.5 — extractor code)
+
+- [`src/notion_processor.py`](src/notion_processor.py) — full extractor pipeline + CLI
+- [`prompts/notion_processor_extract.md`](prompts/notion_processor_extract.md) — v1 extraction prompt
+- [`src/notion_client.py`](src/notion_client.py) — `read_page_blocks`, `blocks_to_text`, `create_task_draft`
+- [`src/ingestion.py`](src/ingestion.py) — chained `extract_from_page()` after briefing
 
 ---
 
 ## What's next
 
-In rough order:
-
-1. **Commit the polish work** (still uncommitted). Two natural commits: pipeline changes vs. `AGENTS.md` + `HANDOFF.md`.
-2. **Confirm first unattended launchd run** — check `logs/ingestion.log` after 08:00 tomorrow; tick Week 1 criterion in `NEXTSTEPS.md` if the briefing auto-appears.
-3. **Phase 1.5 walkthrough.** Manual extraction test (Phase 1.5 Step 3) to inform the prompt template (Step 4).
-4. **Phase 2 Step 0 = build `src/notion_processor.py`.** Tracked in `BACKLOG.md`. Must happen before Composio/Hermes work or Hermes polls an empty queue.
+1. **User: activate Phase 1.5.** `pip install -r requirements.txt -r requirements-dev.txt` → LLM key in `.env` → Notion Tasks columns → `TEST_BRIEFING_PAGE_ID` in `.env` for integration tests. See [NEXTSTEPS.md Phase 1.5](NEXTSTEPS.md).
+2. **User: run checkpoints.** `pytest` → `pytest --run-integration` → manual 03 → 06 → 07. Iterate prompt between 03 and 06.
+3. **Confirm first unattended launchd run** with chained extractor — check `logs/ingestion.log` after 08:00.
+4. **Commits when ready** — suggest splitting: (a) PLAN sweep + test reorg, (b) Phase 1.5 + LLM adapter, (c) earlier arch refinements.
+5. **Phase 2** — `src/executor.py` daemon; do not start without explicit user ask.
 
 ---
 
 ## Blockers / open questions
 
-- **Notion AI automation mechanism is undecided.** The "external helper script" path was chosen, but the exact invocation (chained from `ingestion.py` vs. its own launchd job) is still open. Pending decision noted in NEXTSTEPS Phase 1.5 Step 5.
-- **Refresh-token weekly expiry.** OAuth consent screen is in Testing mode, so `token.json` rotates every 7 days. Cron will silently start failing — workaround documented in NEXTSTEPS Phase 1 Step 5 Troubleshooting. Long-term fix: publish the app (no verification required for a single-user app with `gmail.readonly` + `calendar.readonly`), but not blocking.
-- **Notion AI subscription not yet active.** Phase 1.5 cannot fully validate until the user enables it ($10/mo, per Phase 0 Step 5). Documented but pending.
+- **LLM key + Notion columns + `TEST_BRIEFING_PAGE_ID`** — only manual gates before full smoke.
+- **Refresh-token weekly expiry** — OAuth Testing mode; see NEXTSTEPS Phase 1 troubleshooting.
+- **First unattended cron with chained extractor** — not yet confirmed end-to-end.
 
 ---
 
 ## Notes for the next agent
 
-- **Inbox query semantics changed.** Old: "unread AND ≤24h." New: "unread OR ≤24h, max 10." On a quiet day this can dredge old unread items; on a busy day, the cap of 10 may cut off real recent traffic. Watch user feedback the first week and consider adding a separate "Recent" and "Backlog (unread)" section split if it bites.
-- **`.env` source contains live `NOTION_TOKEN`.** Don't echo `.env` contents back in chat; only show field names. The `install_launchd.sh` subshell pattern was deliberately chosen to avoid leaking other env vars into the parent shell.
-- **Hermes hasn't been touched.** No Phase 2 code exists. Don't import `composio` or `hermes_agent` anywhere — those packages aren't installed and `pip install -r requirements.txt` will not pull them.
-- **`PLAN.md` is read-only.** If the user asks you to update architecture, push back and ask whether they want a NEXTSTEPS/BACKLOG entry instead. Real PLAN edits require an explicit "yes, edit PLAN."
-- **OAuth + briefing cycle confirmed working end-to-end** as of the latest run — `token.json` exists, briefing appeared in Notion Notes DB with all three sections populated. If that breaks, first check OAuth test-user list and `credentials.json` location before anything else.
+- **Unit tests are the new minimum bar.** Run `pytest` before any extractor changes.
+- **Integration tests need `--run-integration`.** Do not run them in CI yet (no workflow); user runs locally.
+- **PLAN.md sweep is done.** Extractor process owns Task creation; no Notion AI subscription.
+- **Hermes hasn't been touched.** No Phase 2 code.
+- **`.env` contains live secrets.** Never echo contents; only field names.
 
 ---
 
 ## History
 
-_(Older session summaries get rotated down here. Keep the Status / What shipped / What's next blocks above lean.)_
+_(Older session summaries get rotated down here.)_
 
-- **2026-05-22 (Phase 0 + Phase 1 manual setup):** Notion DBs created (Notes + Tasks); integration token + DB sharing; Google Cloud project, OAuth consent screen (Testing mode + test user), `credentials.json` downloaded; venv created; first `python -m src.ingestion` succeeded after fixing `access_denied` by adding the Gmail to Test users. Commits: `78362f6`, `b91b853`.
+- **2026-05-24 (test reorg + PLAN sweep):** pytest three-tier layout; PLAN.md Notion AI → extractor language. Plan: `test_reorg_plan_md_sweep_5735729e`.
+- **2026-05-24 (LLM adapter):** `src/llm.py` dual provider; Gemini verified by user.
+- **2026-05-23 (Phase 1.5 build):** `notion_processor.py`, prompts, manual smoke scripts, ingestion chain.
+- **2026-05-23 (arch refinements):** Phase 2 spec lockdown in PLAN/NEXTSTEPS/BACKLOG.
+- **2026-05-22 (Phase 1 close):** launchd, HN-only news, `fae5e35`.

@@ -1,0 +1,14 @@
+```json
+{
+  "tasks": [
+    {
+      "task_name": "Quick check",
+      "context": "Verify something.",
+      "target": "Manual",
+      "risk_tier": "3-Manual",
+      "eisenhower": "Q2 Important",
+      "schedule_date": "2026-05-25T09:00:00-07:00"
+    }
+  ]
+}
+```

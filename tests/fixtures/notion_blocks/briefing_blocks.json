@@ -1,0 +1,43 @@
+[
+  {
+    "object": "block",
+    "type": "heading_2",
+    "heading_2": {
+      "rich_text": [{"type": "text", "plain_text": "News", "text": {"content": "News"}}]
+    }
+  },
+  {
+    "object": "block",
+    "type": "paragraph",
+    "paragraph": {
+      "rich_text": [{"type": "text", "plain_text": "HN front page headline.", "text": {"content": "HN front page headline."}}]
+    }
+  },
+  {
+    "object": "block",
+    "type": "heading_2",
+    "heading_2": {
+      "rich_text": [{"type": "text", "plain_text": "Inbox", "text": {"content": "Inbox"}}]
+    }
+  },
+  {
+    "object": "block",
+    "type": "bulleted_list_item",
+    "bulleted_list_item": {
+      "rich_text": [{"type": "text", "plain_text": "Email from Sarah", "text": {"content": "Email from Sarah"}}]
+    }
+  },
+  {
+    "object": "block",
+    "type": "divider",
+    "divider": {}
+  },
+  {
+    "object": "block",
+    "type": "to_do",
+    "to_do": {
+      "rich_text": [{"type": "text", "plain_text": "Review contract", "text": {"content": "Review contract"}}],
+      "checked": false
+    }
+  }
+]

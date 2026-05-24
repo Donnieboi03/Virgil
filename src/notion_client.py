@@ -120,6 +120,102 @@ def query_database(database_id: str, **kwargs: Any) -> list[dict[str, Any]]:
     return response.get("results", [])
 
 
+@retry(
+    retry=retry_if_exception_type(Exception),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+def read_page_blocks(page_id: str) -> list[dict[str, Any]]:
+    """Return all top-level children blocks of a page, following pagination.
+
+    Does NOT recurse into nested blocks. For Daily Briefings written by
+    create_briefing_note(), the body is flat (headings + paragraphs), so a
+    single level is sufficient.
+    """
+    n = _notion()
+    blocks: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        kwargs: dict[str, Any] = {"block_id": page_id, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        response = _rate_limited_call(n.blocks.children.list, **kwargs)
+        blocks.extend(response.get("results", []))
+        if not response.get("has_more"):
+            break
+        cursor = response.get("next_cursor")
+        if not cursor:
+            break
+    return blocks
+
+
+def blocks_to_text(blocks: list[dict[str, Any]]) -> str:
+    """Render a flat list of Notion blocks to a markdown-ish string.
+
+    Handles the block types create_briefing_note() emits (heading_2,
+    paragraph) plus the common ones a human might add (heading_1/3,
+    bulleted_list_item, numbered_list_item, to_do, quote, code, divider).
+    Unknown block types are skipped silently — the LLM doesn't need them.
+    """
+    lines: list[str] = []
+    for block in blocks:
+        btype = block.get("type", "")
+        payload = block.get(btype, {}) if btype else {}
+        text = "".join(
+            r.get("plain_text", "") for r in payload.get("rich_text", [])
+        )
+
+        if btype == "heading_1":
+            lines.append(f"# {text}")
+        elif btype == "heading_2":
+            lines.append(f"## {text}")
+        elif btype == "heading_3":
+            lines.append(f"### {text}")
+        elif btype == "paragraph":
+            lines.append(text)
+        elif btype == "bulleted_list_item":
+            lines.append(f"- {text}")
+        elif btype == "numbered_list_item":
+            lines.append(f"1. {text}")
+        elif btype == "to_do":
+            checked = "x" if payload.get("checked") else " "
+            lines.append(f"- [{checked}] {text}")
+        elif btype == "quote":
+            lines.append(f"> {text}")
+        elif btype == "code":
+            lang = payload.get("language", "")
+            lines.append(f"```{lang}\n{text}\n```")
+        elif btype == "divider":
+            lines.append("---")
+        else:
+            continue
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+@retry(
+    retry=retry_if_exception_type(Exception),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+def create_task_draft(properties: dict[str, Any]) -> str:
+    """Create a row in the Tasks DB with the given Notion property dict.
+
+    Caller is responsible for shaping `properties` to Notion's nested format
+    (e.g. {"Task Name": {"title": [...]}, "Status": {"select": {...}}}).
+    Returns the new page ID.
+    """
+    cfg = get_config()
+    page = _rate_limited_call(
+        _notion().pages.create,
+        parent={"database_id": cfg.tasks_db_id},
+        properties=properties,
+    )
+    return page["id"]
+
+
 def rich_text_content(prop: dict[str, Any]) -> str:
     return "".join(r.get("plain_text", "") for r in prop.get("rich_text", []))
 

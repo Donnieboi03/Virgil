@@ -1,0 +1,13 @@
+{
+  "tasks": [
+    {
+      "task_name": "Reply to Sarah Chen with revised Acme contract",
+      "context": "Sarah Chen (sarah@acme.com) requested the revised Acme contract by EOD Monday.",
+      "target": "Gmail",
+      "risk_tier": "1-Draft",
+      "eisenhower": "Q1 Urgent+Important",
+      "schedule_date": "2026-05-23T08:00:00-07:00"
+    }
+  ],
+  "notes": "Skipped 1 Q4 item: Rust async benchmarks (informational)."
+}

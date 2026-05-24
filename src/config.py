@@ -48,6 +48,9 @@ class Config:
     composio_api_key: str
     openrouter_api_key: str
     llm_model: str
+    google_api_key: str
+    gemini_model: str
+    llm_provider: str
     hermes_wip_limit: int
     hermes_dlq_threshold: int
     hermes_poll_interval: int
@@ -79,6 +82,9 @@ class Config:
         self.composio_api_key = _optional("COMPOSIO_API_KEY")
         self.openrouter_api_key = _optional("OPENROUTER_API_KEY")
         self.llm_model = _optional("LLM_MODEL", "openai/gpt-4.1-mini")
+        self.google_api_key = _optional("GOOGLE_API_KEY")
+        self.gemini_model = _optional("GEMINI_MODEL", "gemini-2.5-flash")
+        self.llm_provider = _optional("LLM_PROVIDER")
 
         try:
             self.hermes_wip_limit = int(_optional("HERMES_WIP_LIMIT", "5"))

@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["."]
+markers = [
+    "integration: hits live Notion or LLM APIs (run with --run-integration)",
+]
+addopts = "-q"
