@@ -15,9 +15,7 @@ HAPPY_JSON = json.dumps(
             {
                 "task_name": "Reply to Sarah",
                 "context": "Acme contract by Monday.",
-                "target": "Gmail",
-                "risk_tier": "1-Draft",
-                "eisenhower": "Q1 Urgent+Important",
+                "eisenhower": "Q3 Delegate",
                 "schedule_date": "2026-05-23T08:00:00-07:00",
             }
         ]

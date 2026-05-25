@@ -16,9 +16,7 @@ class TestHappyPath:
                     {
                         "task_name": "Reply to Sarah",
                         "context": "Acme contract revision needed by Mon EOD.",
-                        "target": "Gmail",
-                        "risk_tier": "1-Draft",
-                        "eisenhower": "Q1 Urgent+Important",
+                        "eisenhower": "Q3 Delegate",
                         "schedule_date": "2026-05-23T08:00:00-07:00",
                     }
                 ]
@@ -28,85 +26,42 @@ class TestHappyPath:
         assert len(tasks) == 1
         assert notes is None
         assert tasks[0].task_name == "Reply to Sarah"
+        assert tasks[0].eisenhower == "Q3 Delegate"
 
     def test_fenced_json_from_fixture(self, fixtures_dir) -> None:
         raw = (fixtures_dir / "llm_responses" / "malformed_fenced.json").read_text()
         tasks, notes = parse_extractor_output(raw)
         assert len(tasks) == 1
-        assert tasks[0].target == "Manual"
+        assert tasks[0].eisenhower == "Q3 Delegate"
 
     def test_happy_path_fixture(self, fixtures_dir) -> None:
         raw = (fixtures_dir / "llm_responses" / "happy_path.json").read_text()
         tasks, notes = parse_extractor_output(raw)
         assert len(tasks) == 1
         assert notes is not None
-        assert "Q4" in notes
+        assert "Skipped" in notes
 
-
-class TestQ4SkipRule:
-    def test_q4_task_dropped(self) -> None:
+    def test_missing_eisenhower_defaults_to_q3(self) -> None:
         raw = json.dumps(
             {
                 "tasks": [
                     {
-                        "task_name": "Read HN thread on Rust",
-                        "context": "Informational only",
-                        "target": "Browser",
-                        "risk_tier": "2-Approval",
-                        "eisenhower": "Q4 Neither",
-                        "schedule_date": "2026-05-23T08:00:00-07:00",
+                        "task_name": "Ack email",
+                        "context": "Send a quick thanks.",
                     }
                 ]
             }
         )
         tasks, _ = parse_extractor_output(raw)
-        assert len(tasks) == 0
+        assert tasks[0].eisenhower == "Q3 Delegate"
 
-    def test_q4_skip_notes_fixture(self, fixtures_dir) -> None:
+
+class TestSkippedItems:
+    def test_empty_tasks_with_notes(self, fixtures_dir) -> None:
         raw = (fixtures_dir / "llm_responses" / "q4_skip.json").read_text()
         tasks, notes = parse_extractor_output(raw)
         assert len(tasks) == 0
         assert notes is not None
-
-
-class TestTimeBudget:
-    def test_time_budget_present(self) -> None:
-        raw = json.dumps(
-            {
-                "tasks": [
-                    {
-                        "task_name": "Long research session",
-                        "context": "Compare 5 vendor SLAs.",
-                        "target": "Browser",
-                        "risk_tier": "2-Approval",
-                        "eisenhower": "Q2 Important",
-                        "schedule_date": "2026-05-25T09:00:00-07:00",
-                        "time_budget_seconds": 1800,
-                    }
-                ]
-            }
-        )
-        tasks, _ = parse_extractor_output(raw)
-        assert tasks[0].time_budget_seconds == 1800
-
-    def test_time_budget_null(self) -> None:
-        raw = json.dumps(
-            {
-                "tasks": [
-                    {
-                        "task_name": "Quick check",
-                        "context": "Verify something.",
-                        "target": "Manual",
-                        "risk_tier": "3-Manual",
-                        "eisenhower": "Q2 Important",
-                        "schedule_date": "2026-05-25T09:00:00-07:00",
-                        "time_budget_seconds": None,
-                    }
-                ]
-            }
-        )
-        tasks, _ = parse_extractor_output(raw)
-        assert tasks[0].time_budget_seconds is None
 
 
 class TestMalformedInput:
@@ -116,21 +71,14 @@ class TestMalformedInput:
             ("this is not json at all", "not valid JSON"),
             ("[1, 2, 3]", "Expected JSON object"),
             (
-                '{"tasks":[{"task_name":"x","target":"Gmail","risk_tier":"1-Draft",'
-                '"eisenhower":"Q1 Urgent+Important","schedule_date":"2026-05-23T08:00:00-07:00"}]}',
+                '{"tasks":[{"task_name":"x","eisenhower":"Q3 Delegate",'
+                '"schedule_date":"2026-05-23T08:00:00-07:00"}]}',
                 "missing required fields",
             ),
             (
-                '{"tasks":[{"task_name":"x","context":"y","target":"Telegram",'
-                '"risk_tier":"1-Draft","eisenhower":"Q1 Urgent+Important",'
-                '"schedule_date":"2026-05-23T08:00:00-07:00"}]}',
-                "invalid `target`",
-            ),
-            (
-                '{"tasks":[{"task_name":"x","context":"y","target":"Gmail",'
-                '"risk_tier":"5-WildWest","eisenhower":"Q1 Urgent+Important",'
-                '"schedule_date":"2026-05-23T08:00:00-07:00"}]}',
-                "invalid `risk_tier`",
+                '{"tasks":[{"task_name":"x","context":"y",'
+                '"eisenhower":"Q4 Auto","schedule_date":"2026-05-23T08:00:00-07:00"}]}',
+                "Invalid `eisenhower`",
             ),
         ],
     )

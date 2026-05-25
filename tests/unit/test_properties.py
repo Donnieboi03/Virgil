@@ -8,31 +8,27 @@ def test_all_core_fields_present() -> None:
     task = ExtractedTask(
         task_name="Reply to Sarah",
         context="Send revised contract.",
-        target="Gmail",
-        risk_tier="1-Draft",
-        eisenhower="Q1 Urgent+Important",
+        eisenhower="Q3 Delegate",
         schedule_date="2026-05-23T08:00:00-07:00",
-        time_budget_seconds=None,
     )
     props = task_to_notion_properties(task)
     assert props["Task Name"]["title"][0]["text"]["content"] == "Reply to Sarah"
-    assert props["Target"]["select"]["name"] == "Gmail"
-    assert props["Risk Tier"]["select"]["name"] == "1-Draft"
+    assert props["Context"]["rich_text"][0]["text"]["content"] == "Send revised contract."
     assert props["Status"]["status"]["name"] == "Draft"
-    assert props["Eisenhower"]["select"]["name"] == "Q1 Urgent+Important"
+    assert props["Eisenhower"]["select"]["name"] == "Q3 Delegate"
     assert props["Schedule Date"]["date"]["start"] == "2026-05-23T08:00:00-07:00"
+    assert "Target" not in props
+    assert "Risk Tier" not in props
     assert "Time Budget" not in props
+    assert "Reflection" not in props
 
 
-def test_time_budget_included_when_set() -> None:
+def test_q2_blank_schedule_date_omitted() -> None:
     task = ExtractedTask(
-        task_name="Research",
-        context="Long session.",
-        target="Browser",
-        risk_tier="2-Approval",
-        eisenhower="Q2 Important",
-        schedule_date="2026-05-25T09:00:00-07:00",
-        time_budget_seconds=1800,
+        task_name="File quarterly taxes",
+        context="Block time before Jan 15 deadline.",
+        eisenhower="Q2 Schedule",
+        schedule_date="",
     )
     props = task_to_notion_properties(task)
-    assert props["Time Budget"]["number"] == 1800
+    assert "Schedule Date" not in props

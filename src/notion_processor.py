@@ -37,27 +37,20 @@ from .notion_client import (
 
 PROMPT_PATH = ROOT / "prompts" / "notion_processor_extract.md"
 
-VALID_TARGETS = {"Gmail", "Calendar", "Notion", "Browser", "Manual"}
-VALID_RISK_TIERS = {"0-Auto", "1-Draft", "2-Approval", "3-Manual"}
 VALID_EISENHOWER = {
-    "Q1 Urgent+Important",
-    "Q2 Important",
-    "Q3 Urgent",
-    "Q4 Neither",
+    "Q1 Do",
+    "Q2 Schedule",
+    "Q3 Delegate",
 }
-
-DEFAULT_TIME_BUDGET_SECONDS = 120
+DEFAULT_EISENHOWER = "Q3 Delegate"
 
 
 @dataclass
 class ExtractedTask:
     task_name: str
     context: str
-    target: str
-    risk_tier: str
     eisenhower: str
-    schedule_date: str  # ISO 8601 datetime string
-    time_budget_seconds: int | None = None
+    schedule_date: str  # ISO 8601 datetime string; may be blank for Q2
 
 
 @dataclass
@@ -92,14 +85,25 @@ def _strip_code_fence(raw: str) -> str:
     """If the model wrapped its JSON in markdown fences, peel them off."""
     text = raw.strip()
     if text.startswith("```"):
-        # Drop opening fence (with optional language tag).
         first_newline = text.find("\n")
         if first_newline != -1:
             text = text[first_newline + 1 :]
-        # Drop trailing fence.
         if text.endswith("```"):
             text = text[:-3]
     return text.strip()
+
+
+def _normalize_eisenhower(raw: Any) -> str:
+    """Return a valid Eisenhower value; default to Q3 Delegate when missing."""
+    if not isinstance(raw, str) or not raw.strip():
+        return DEFAULT_EISENHOWER
+    value = raw.strip()
+    if value not in VALID_EISENHOWER:
+        raise ExtractorError(
+            f"Invalid `eisenhower` {value!r}; "
+            f"must be one of {sorted(VALID_EISENHOWER)}"
+        )
+    return value
 
 
 def parse_extractor_output(raw: str) -> tuple[list[ExtractedTask], str | None]:
@@ -108,12 +112,13 @@ def parse_extractor_output(raw: str) -> tuple[list[ExtractedTask], str | None]:
     Tolerates:
       - Markdown code fences around the JSON
       - Missing `notes` field (returns None)
-      - `time_budget_seconds` missing or null (returns None on the Task)
+      - Missing `eisenhower` (defaults to Q3 Delegate)
+      - Missing or blank `schedule_date` (filled by apply_eisenhower_defaults)
 
     Raises ExtractorError on:
       - Invalid JSON
       - Missing required Task fields
-      - Enum values not in the allowed sets
+      - Invalid Eisenhower enum values
     """
     cleaned = _strip_code_fence(raw)
     try:
@@ -133,14 +138,7 @@ def parse_extractor_output(raw: str) -> tuple[list[ExtractedTask], str | None]:
         )
 
     tasks: list[ExtractedTask] = []
-    required_fields = {
-        "task_name",
-        "context",
-        "target",
-        "risk_tier",
-        "eisenhower",
-        "schedule_date",
-    }
+    required_fields = {"task_name", "context"}
     for idx, item in enumerate(tasks_raw):
         if not isinstance(item, dict):
             raise ExtractorError(f"Task at index {idx} is not an object: {item!r}")
@@ -150,52 +148,16 @@ def parse_extractor_output(raw: str) -> tuple[list[ExtractedTask], str | None]:
                 f"Task at index {idx} missing required fields: {sorted(missing)}"
             )
 
-        target = item["target"]
-        if target not in VALID_TARGETS:
-            raise ExtractorError(
-                f"Task {idx} has invalid `target` {target!r}; "
-                f"must be one of {sorted(VALID_TARGETS)}"
-            )
-
-        risk_tier = item["risk_tier"]
-        if risk_tier not in VALID_RISK_TIERS:
-            raise ExtractorError(
-                f"Task {idx} has invalid `risk_tier` {risk_tier!r}; "
-                f"must be one of {sorted(VALID_RISK_TIERS)}"
-            )
-
-        eisenhower = item["eisenhower"]
-        if eisenhower not in VALID_EISENHOWER:
-            raise ExtractorError(
-                f"Task {idx} has invalid `eisenhower` {eisenhower!r}; "
-                f"must be one of {sorted(VALID_EISENHOWER)}"
-            )
-
-        if eisenhower == "Q4 Neither":
-            # Defense in depth: the prompt tells the model to SKIP Q4 entirely.
-            # If a Q4 leaks through anyway, treat it as a notes addition rather
-            # than letting it pollute the Tasks DB.
-            continue
-
-        time_budget = item.get("time_budget_seconds")
-        if time_budget is not None and not isinstance(time_budget, int):
-            try:
-                time_budget = int(time_budget)
-            except (TypeError, ValueError) as exc:
-                raise ExtractorError(
-                    f"Task {idx} has non-integer `time_budget_seconds` "
-                    f"{time_budget!r}"
-                ) from exc
+        eisenhower = _normalize_eisenhower(item.get("eisenhower"))
+        schedule_raw = item.get("schedule_date", "")
+        schedule_date = str(schedule_raw).strip() if schedule_raw is not None else ""
 
         tasks.append(
             ExtractedTask(
                 task_name=str(item["task_name"]).strip(),
                 context=str(item["context"]).strip(),
-                target=target,
-                risk_tier=risk_tier,
                 eisenhower=eisenhower,
-                schedule_date=str(item["schedule_date"]).strip(),
-                time_budget_seconds=time_budget,
+                schedule_date=schedule_date,
             )
         )
 
@@ -215,7 +177,7 @@ def apply_eisenhower_defaults(
 ) -> ExtractedTask:
     """Fill schedule_date if missing/blank per the Eisenhower → default rule.
 
-    Q1/Q3 = now, Q2 = now + 2 days, Q4 = (already filtered out at parse time).
+    Q1 Do / Q3 Delegate = now. Q2 Schedule = leave blank (user sets when ready).
     If schedule_date is already a valid ISO datetime, leave it alone.
     """
     existing = (task.schedule_date or "").strip()
@@ -226,19 +188,19 @@ def apply_eisenhower_defaults(
         except ValueError:
             pass
 
-    if task.eisenhower == "Q2 Important":
-        default = now + dt.timedelta(days=2)
-    else:
-        default = now
+    if task.eisenhower == "Q2 Schedule":
+        return ExtractedTask(
+            task_name=task.task_name,
+            context=task.context,
+            eisenhower=task.eisenhower,
+            schedule_date="",
+        )
 
     return ExtractedTask(
         task_name=task.task_name,
         context=task.context,
-        target=task.target,
-        risk_tier=task.risk_tier,
         eisenhower=task.eisenhower,
-        schedule_date=default.isoformat(),
-        time_budget_seconds=task.time_budget_seconds,
+        schedule_date=now.isoformat(),
     )
 
 
@@ -252,21 +214,17 @@ def _rt(text: str) -> list[dict[str, Any]]:
 def task_to_notion_properties(task: ExtractedTask) -> dict[str, Any]:
     """Build the Notion property dict for a new Draft Task row.
 
-    Schedule Date is written with a time component; Notion accepts the full
-    ISO 8601 datetime string. Time Budget is omitted entirely when None so
-    that Notion's default-blank behavior shows through in the UI.
+    Writes MVP schema fields only. Reflection is left empty at extraction;
+    Hermes links it after execution.
     """
     properties: dict[str, Any] = {
         "Task Name": {"title": _rt(task.task_name)},
         "Context": {"rich_text": _rt(task.context)},
-        "Target": {"select": {"name": task.target}},
-        "Risk Tier": {"select": {"name": task.risk_tier}},
         "Status": {"status": {"name": "Draft"}},
         "Eisenhower": {"select": {"name": task.eisenhower}},
-        "Schedule Date": {"date": {"start": task.schedule_date}},
     }
-    if task.time_budget_seconds is not None:
-        properties["Time Budget"] = {"number": task.time_budget_seconds}
+    if task.schedule_date.strip():
+        properties["Schedule Date"] = {"date": {"start": task.schedule_date}}
     return properties
 
 
@@ -301,12 +259,7 @@ def call_llm(body_text: str, now: dt.datetime, source_kind: str) -> str:
 
 
 def _infer_source_kind(blocks: list[dict[str, Any]]) -> str:
-    """Cheap heuristic: peek at the page title-ish first heading.
-
-    Today only Daily Briefings exist in the pipeline. Meeting Notes /
-    Opportunities will land as their own ingesters in later phases. Keep this
-    simple now and expand it later.
-    """
+    """Cheap heuristic: peek at the page title-ish first heading."""
     for block in blocks:
         if block.get("type") in {"heading_1", "heading_2"}:
             text = "".join(
@@ -324,12 +277,7 @@ def _infer_source_kind(blocks: list[dict[str, Any]]) -> str:
 def extract_from_page(
     page_id: str, *, dry_run: bool = False
 ) -> ProcessorResult:
-    """Top-level: read page → extract → default → write.
-
-    On dry_run=True, skips the Notion write step entirely and prints the
-    Task list to stdout. Used by tests/manual/03_extractor_dry_run.py for
-    prompt iteration without burning Notion writes.
-    """
+    """Top-level: read page → extract → default → write."""
     cfg = get_config()
     tz = ZoneInfo(cfg.timezone)
     now = dt.datetime.now(tz)
@@ -359,11 +307,8 @@ def extract_from_page(
         print("[processor] --dry-run: not writing to Notion")
         for i, t in enumerate(tasks, start=1):
             print(f"  [{i}] {t.task_name}")
-            print(f"       target={t.target} risk={t.risk_tier} "
-                  f"eis={t.eisenhower} schedule={t.schedule_date}")
+            print(f"       eis={t.eisenhower} schedule={t.schedule_date or '(blank)'}")
             print(f"       context: {t.context}")
-            if t.time_budget_seconds is not None:
-                print(f"       time_budget_seconds={t.time_budget_seconds}")
         return ProcessorResult(
             page_id=page_id,
             tasks_written=0,

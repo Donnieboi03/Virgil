@@ -22,11 +22,8 @@ def smoke_task_page_id() -> str:
     task = ExtractedTask(
         task_name="SMOKE TEST — pytest integration (auto-archived)",
         context="Created by tests/integration/test_notion_write.py. Should be archived after test.",
-        target="Manual",
-        risk_tier="2-Approval",
-        eisenhower="Q2 Important",
+        eisenhower="Q3 Delegate",
         schedule_date=now.isoformat(),
-        time_budget_seconds=60,
     )
     page_id = create_task_draft(task_to_notion_properties(task))
     yield page_id

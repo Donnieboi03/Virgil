@@ -210,25 +210,22 @@ The extractor assigns initial tier on Task creation (defaults to Tier 2 when unc
 
 ---
 
-## Eisenhower → Default Schedule Date
+## Eisenhower → Default Schedule Date (MVP)
 
-When the extractor creates a Task, the Eisenhower quadrant determines the default `Schedule Date`. The agent can override per-Task; this is just the default.
+When the extractor creates a Task, the Eisenhower quadrant encodes **who acts** and the default `Schedule Date`. Importance means **cognitive engagement on you**, not outcome stakes.
 
-| Eisenhower | Default Schedule Date | Notes |
-|---|---|---|
-| Q1 Urgent + Important | `now` | Picked up on the next executor poll cycle |
-| Q2 Important, Not Urgent | `now + 2 days` | Deliberately deferred — agent gets lead time to do it well |
-| Q3 Urgent, Not Important | `now` | Auto-pilot lane; usually Risk Tier 0-Auto |
-| Q4 Neither Urgent nor Important | **skip — do not create a Task** | Mentioned once in the extraction output for visibility, not promoted to a Task row |
+| Eisenhower | Who executes | AI role | Default `Schedule Date` |
+|---|---|---|---|
+| Q1 Do | Human, now | None | `now` |
+| Q2 Schedule | Human, later | AI sets up logistics (calendar block, reminder, prep) | blank — user sets when ready |
+| Q3 Delegate | AI (safe action) | AI drafts/creates; human reviews final step | `now` |
+| Q4 (Neither) | — | — | **skip — do not create a Task**; mention in extraction `notes` only |
 
-Risk Tier and Eisenhower are **orthogonal**:
+Hermes (Phase 2) pickup filter: `Status=Approved AND Eisenhower IN (Q2, Q3) AND Schedule_Date <= now()`. Q1 Tasks are personal reminders — Hermes ignores them.
 
-- **Eisenhower** = priority axis (when + how important)
-- **Risk Tier** = delegation axis (who acts and with what approval)
+`Schedule Date` is the only thing the scheduler checks. Editing it snoozes or expedites work without changing quadrant.
 
-The extractor sets both at extraction time. A typical Q2 Task defaults to Risk Tier 1-Draft (delegate to agent, you confirm); a typical Q1 Task defaults to Risk Tier 2-Approval (you decide in the moment); Q3 often lands at 0-Auto. The user always overrides on review.
-
-`Schedule Date` is the only thing the scheduler checks. Once the row exists, the executor doesn't care which quadrant it came from — only whether `Schedule_Date <= now()`. This decoupling lets you snooze a Q1 task (push `Schedule Date` out) without changing its quadrant.
+Safety is structural in action shape: Gmail drafts (not sends), calendar invites are recoverable, etc. See [BACKLOG.md](BACKLOG.md) for deferred Risk Tier / Target columns.
 
 ---
 
@@ -240,7 +237,7 @@ Bidirectional sync is never used. Mirror direction is always Notion → Obsidian
 |---|---|---|---|
 | Meeting Notes | Notion | Extractor (`notion_processor.py`) | Yes — archive copy |
 | Daily Briefings | Notion | Hermes (ingestion.py) | Yes — archive copy |
-| Tasks | Notion | Extractor creates (via `src/notion_processor.py` from any single-doc source: Briefings, Meeting Notes, Opportunities). Hermes reads + sets `Status`, `System Log`, `Retry Count`, `Failure Category`, `Failure Reason`, `First/Last Failed At` only. | No (Hermes reads via API) |
+| Tasks | Notion | Extractor creates (via `src/notion_processor.py` from any single-doc source: Briefings, Meeting Notes, Opportunities). Hermes reads + sets `Status` and links `Reflection` only (MVP). Phase 2+ may add failure/DLQ fields — see BACKLOG. | No (Hermes reads via API) |
 | Contacts (metadata) | Notion | Extractor extracts, Hermes enriches | Yes — enriched .md per person |
 | Projects | Notion | Human creates | Yes — Hermes adds intelligence layer |
 | Opportunities | Notion | Human or extractor | Yes — Hermes adds pipeline context |
@@ -252,7 +249,7 @@ Bidirectional sync is never used. Mirror direction is always Notion → Obsidian
 
 The extractor process never touches Obsidian-owned content. Hermes never edits Notion content except:
 - Task `Status` fields (state transitions only)
-- `System Log` on Tasks
+- Task `Reflection` relation (links to Notes DB `Kind=Task Reflection`)
 - `Last Interaction` + `Context Summary` on Contacts
 - Creating new Notes rows (Reflections, Daily Briefings)
 
@@ -275,37 +272,20 @@ One database for all written context. `Kind` field distinguishes types.
 | `Contacts` | Relation → Contacts | Multi |
 | `Created` | Created time | Auto |
 
-### 2. Tasks
+### 2. Tasks (MVP schema — 6 columns)
 
 | Property | Type | Notes |
 |---|---|---|
 | `Task Name` | Title | |
-| `Context` | Text | Natural-language instruction for the agent |
-| `Target` | Select | Gmail / Calendar / Notion / Browser / Manual |
-| `Risk Tier` | Select | 0-Auto / 1-Draft / 2-Approval / 3-Manual |
-| `Status` | Select | Draft / Approved / Processing / Executed / Failed / DLQ-Resolved |
-| `Eisenhower` | Select | Q1 Urgent+Important / Q2 Important / Q3 Urgent / Q4 Neither. See "Eisenhower → Default Schedule Date" above. |
-| `Schedule Date` | Date (with time) | When this Task becomes eligible for execution. Default set by the extractor from Eisenhower (Q1/Q3 = now, Q2 = +2 days, Q4 = not created). Editing this is how you snooze or expedite work. |
-| `Time Budget` | Number (seconds) | Hard deadline for a single execution attempt. **If blank, executor uses 120s.** On expiry → `Status=Failed`, `Failure Category=Timeout`. The extractor may set this explicitly when a Task is obviously large. |
-| `External Action ID` | Text | Idempotency key, written before execution |
-| `Failure Category` | Select | Transient / Missing Context / Refused / Hard Error / **Timeout** / None |
-| `Failure Reason` | Text | What Hermes observed |
-| `Retry Count` | Number | **Manual DLQ retries only.** In-budget transient backoff is agent-internal (via `tenacity`) and not surfaced here — see the Reflection for that detail. |
-| `First Failed At` | Date | |
-| `Last Failed At` | Date | |
-| `Resolution Action` | Select | Retry / Clarify / Approve+Retry / Reformulate / Drop |
-| `System Log` | Text | Written back by executor |
-| `Project` | Relation → Projects | |
-| `Opportunity` | Relation → Opportunities | |
-| `Contacts` | Relation → Contacts | Multi |
-| `Created` | Created time | Auto |
-| ~~`WIP Slot`~~ | ~~Number~~ | **Deferred — see [BACKLOG.md](BACKLOG.md).** Single-threaded executor in Phase 2 makes this meaningless; revisit when parallel sub-agents ship. |
+| `Context` | Text | Natural-language instruction for the agent (implicit tool signal) |
+| `Status` | Status | Draft / Approved / Processing / Done / Failed |
+| `Eisenhower` | Select | Q1 Do / Q2 Schedule / Q3 Delegate. See "Eisenhower → Default Schedule Date" above. |
+| `Schedule Date` | Date (with time) | When eligible for execution. Q1/Q3 default `now`; Q2 default blank. |
+| `Reflection` | Relation → Notes | Link to `Kind=Task Reflection` note. Empty at extraction; Hermes writes after terminal state. |
 
-**DLQ view** = saved filter on Tasks where `Status = Failed`, grouped by `Failure Category`. One-tap resolution buttons per row.
+**Active view** = filter `Status NOT IN (Done, Failed)`, sort by `Schedule Date` ascending.
 
-**Approve batch view** = saved filter where `Status = Pending Approval`, sorted by `Eisenhower`.
-
-**Active work view** filters `Status NOT IN (Executed, DLQ-Resolved)` so resolved failures don't clutter the queue while remaining queryable for history.
+Deferred columns (Target, Risk Tier, Time Budget, DLQ machinery, System Log) — see [BACKLOG.md](BACKLOG.md) for re-introduction triggers.
 
 ### 3. Contacts
 
@@ -395,12 +375,11 @@ The extractor process (`src/notion_processor.py`) is the single-document parser.
 
 At extraction time, the extractor also:
 
-- Assigns `Eisenhower` quadrant per item (Q1 / Q2 / Q3 / Q4)
-- Assigns default `Risk Tier` (Tier 2 when uncertain)
-- Sets default `Schedule Date` per the Eisenhower → Default Schedule Date table (and skips Q4 items entirely)
-- Optionally sets `Time Budget` when the work is obviously large; otherwise leaves it blank and the executor falls back to 120s
+- Assigns `Eisenhower` quadrant per item (Q1 Do / Q2 Schedule / Q3 Delegate; Q4 skipped to `notes`)
+- Sets default `Schedule Date` per the Eisenhower → Default Schedule Date table
+- Defaults missing Eisenhower to Q3 Delegate
 
-Hermes does: cross-document dedup, Contact enrichment, Task state transitions, Obsidian writes, skill refinement, DLQ management.
+Hermes does: cross-document dedup, Contact enrichment, Task state transitions, Reflection links, Obsidian writes, skill refinement. DLQ machinery deferred — see BACKLOG.
 
 ---
 

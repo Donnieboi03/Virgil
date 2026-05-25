@@ -33,7 +33,53 @@ When you pick something up, move it into `NEXTSTEPS.md` (or a new plan) and dele
 
 ---
 
-## Phase 2 executor / Tasks layer (deferred refinements)
+## Tasks schema MVP deferrals (2026-05-25)
+
+Columns cut from the MVP Tasks DB. Re-introduce only when the trigger fires.
+
+### Target column (Gmail / Calendar / Notion / Browser / Manual)
+
+- **What:** Select column the extractor set to route Hermes to a Composio toolkit.
+- **Why deferred:** Hermes can infer tool from Context; one fewer column for the extractor to get wrong.
+- **When to revisit:** Hermes consistently picks wrong tools over 1 week of real runs.
+- **Source:** Tasks schema MVP prune session.
+
+### Risk Tier (0-Auto / 1-Draft / 2-Approval / 3-Manual)
+
+- **What:** Separate delegation/approval lane column orthogonal to Eisenhower.
+- **Why deferred:** Eisenhower now encodes who acts (Q1/Q2/Q3); safety lives in action shape (drafts not sends).
+- **When to revisit:** Need an explicit AI-Auto fire-and-forget lane beyond Q3 safe-action design.
+- **Source:** Tasks schema MVP prune session.
+
+### DLQ machinery (Failure Category, Retry Count, Resolution Action, First/Last Failed At, External Action ID)
+
+- **What:** Full dead-letter-queue workflow on Tasks.
+- **Why deferred:** No Hermes executor yet; no failures to triage.
+- **When to revisit:** Real failures pile up after Phase 2 and manual Failed-status handling isn't enough.
+- **Source:** Tasks schema MVP prune session.
+
+### Time Budget column
+
+- **What:** Per-Task execution deadline in seconds (default 120s in executor).
+- **Why deferred:** Executor not built; hard-code 120s in Phase 2 first pass.
+- **When to revisit:** >1 Task per week exceeds 120s default even after prompt/context fixes.
+- **Source:** Tasks schema MVP prune session.
+
+### System Log column
+
+- **What:** Append-only execution trace on the Task row.
+- **Why deferred:** Reflection relation to Notes DB (`Kind=Task Reflection`) replaces it for learning; keeps Tasks DB lean.
+- **When to revisit:** Reflection-only proves too thin for debugging execution failures.
+- **Source:** Tasks schema MVP prune session.
+
+### Q4 Silent Housekeeping pipeline
+
+- **What:** Extractor emits `silent_actions` for Q4 items (archive, extract 2FA codes) instead of only `notes`.
+- **Why deferred:** Phase 2 Hermes must be stable first; Q4 still filtered to `notes` at extraction.
+- **When to revisit:** Phase 2 Hermes stable for 1+ weeks; user wants AI to handle trivial inbox noise silently.
+- **Source:** Tasks schema MVP prune session.
+
+---
 
 These were considered during the architectural planning session and intentionally cut from Phase 2's first build. Each entry records the trigger that should pull it back into NEXTSTEPS.
 

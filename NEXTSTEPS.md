@@ -58,36 +58,22 @@ Status:
 
 ---
 
-#### Database 2: Tasks
+#### Database 2: Tasks (MVP — 6 columns)
 
 | Property | Type |
 |---|---|
 | `Task Name` | Title (rename the default column) |
 | `Context` | Text |
-| `Target` | Select — options: `Gmail`, `Calendar`, `Notion`, `Browser`, `Manual` |
-| `Risk Tier` | Select — options: `0-Auto`, `1-Draft`, `2-Approval`, `3-Manual` |
-| `Status` | Select — options: `Draft`, `Approved`, `Processing`, `Executed`, `Failed`, `DLQ-Resolved` |
-| `Eisenhower` | Select — options: `Q1 Urgent+Important`, `Q2 Important`, `Q3 Urgent`, `Q4 Neither` |
-| `Schedule Date` | Date *(include time)* — when this Task becomes eligible for execution. Notion AI sets a default from Eisenhower (Q1/Q3 = now, Q2 = +2 days). Edit to snooze or expedite. |
-| `Time Budget` | Number *(seconds)* — hard deadline per execution attempt. **Leave blank for default 120s.** Notion AI may set this when a Task is obviously large. |
-| `External Action ID` | Text |
-| `Failure Category` | Select — options: `Transient`, `Missing Context`, `Refused`, `Hard Error`, `Timeout`, `None` |
-| `Failure Reason` | Text |
-| `Retry Count` | Number *(manual DLQ retries only — in-budget transient backoff is agent-internal and lives in the Reflection)* |
-| `First Failed At` | Date |
-| `Last Failed At` | Date |
-| `Resolution Action` | Select — options: `Retry`, `Clarify`, `Approve+Retry`, `Reformulate`, `Drop` |
-| `System Log` | Text |
-| `Project` | Relation → Projects *(add after Projects DB exists)* |
-| `Opportunity` | Relation → Opportunities *(add after Opportunities DB exists)* |
-| `Contacts` | Relation → Contacts *(add after Contacts DB exists)* |
-| ~~`WIP Slot`~~ | ~~Number~~ — **optional, deferred to BACKLOG.** Phase 2 executor is single-threaded; this only matters when parallel sub-agents ship. Skip for now. |
+| `Status` | Status — options: `Draft`, `Approved`, `Processing`, `Done`, `Failed` |
+| `Eisenhower` | Select — options: `Q1 Do`, `Q2 Schedule`, `Q3 Delegate` |
+| `Schedule Date` | Date *(include time)* — Q1/Q3 default `now`; Q2 default blank |
+| `Reflection` | Relation → Notes DB *(Kind=Task Reflection)* |
 
-**After creating Tasks:** add three saved views:
+**After creating Tasks:** add one saved view:
 
-- **DLQ view**: filter `Status = Failed`, group by `Failure Category`, name it "DLQ"
-- **Approve queue**: filter `Status = Approved`, sort by `Eisenhower` ascending, name it "Approve Queue"
-- **Active work**: filter `Status` is none of `Executed` or `DLQ-Resolved`, name it "Active". Keeps resolved failures out of your main view while still queryable for history.
+- **Active**: filter `Status` is none of `Done` or `Failed`, sort by `Schedule Date` ascending
+
+Deferred columns (Target, Risk Tier, Time Budget, DLQ fields, System Log) — see [BACKLOG.md](BACKLOG.md).
 
 ---
 
@@ -425,16 +411,15 @@ Optional override: `LLM_PROVIDER=gemini` or `openrouter` to force a provider.
 
 ---
 
-### Step 3: Add the new Notion Tasks columns
+### Step 3: Verify Notion Tasks schema (MVP)
 
-These columns are listed in [Phase 0 Step 1 Database 2](#database-2-tasks) but may not exist in your live DB yet. Add them now if absent:
+Your live Tasks DB should match the 6-column MVP schema. If you migrated via Notion AI, confirm:
 
-- [ ] `Schedule Date` — Date type, **include time**
-- [ ] `Time Budget` — Number type, units = seconds
-- [ ] `Failure Category` select option `Timeout` added to the existing options
-- [ ] Saved view **Active work** — filter `Status` is none of `Executed` or `DLQ-Resolved`
-
-If any of these are missing, smoke checkpoint 05 will fail with a clear "missing column" message — it's a faster way to find out than eyeballing the schema.
+- [ ] `Task Name`, `Context`, `Status`, `Eisenhower`, `Schedule Date`, `Reflection` exist
+- [ ] Eisenhower options: `Q1 Do`, `Q2 Schedule`, `Q3 Delegate` (no Q4)
+- [ ] Status options: `Draft`, `Approved`, `Processing`, `Done`, `Failed`
+- [ ] Notes DB Kind includes `Task Reflection` (for Reflection relation)
+- [ ] Saved view **Active** — filter `Status` is none of `Done` or `Failed`
 
 ---
 
