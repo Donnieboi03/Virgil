@@ -64,6 +64,66 @@ class TestSkippedItems:
         assert notes is not None
 
 
+class TestV4Fields:
+    def test_do_why_steps_parsed(self) -> None:
+        raw = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_name": "Fix failed payment",
+                        "context": "Lovable $25 charge failed.",
+                        "do": "Log in to Lovable and update payment method",
+                        "why": "Service will be suspended if payment remains outstanding.",
+                        "steps": ["Open lovable.dev", "Go to billing settings", "Update card"],
+                        "eisenhower": "Q1 Do",
+                        "schedule_date": "2026-05-23T08:00:00-07:00",
+                    }
+                ]
+            }
+        )
+        tasks, _ = parse_extractor_output(raw)
+        t = tasks[0]
+        assert t.do == "Log in to Lovable and update payment method"
+        assert t.why == "Service will be suspended if payment remains outstanding."
+        assert t.steps == ["Open lovable.dev", "Go to billing settings", "Update card"]
+
+    def test_do_why_steps_default_to_empty(self) -> None:
+        raw = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_name": "Reply to Sarah",
+                        "context": "Contract revision due Monday.",
+                        "eisenhower": "Q3 Delegate",
+                        "schedule_date": "2026-05-23T08:00:00-07:00",
+                    }
+                ]
+            }
+        )
+        tasks, _ = parse_extractor_output(raw)
+        t = tasks[0]
+        assert t.do == ""
+        assert t.why == ""
+        assert t.steps == []
+
+    def test_null_steps_treated_as_empty(self) -> None:
+        raw = json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_name": "Check email",
+                        "context": "Routine check.",
+                        "steps": None,
+                        "eisenhower": "Q3 Delegate",
+                        "schedule_date": "2026-05-23T08:00:00-07:00",
+                    }
+                ]
+            }
+        )
+        tasks, _ = parse_extractor_output(raw)
+        assert tasks[0].steps == []
+
+
 class TestMalformedInput:
     @pytest.mark.parametrize(
         "raw,fragment",

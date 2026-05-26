@@ -10,11 +10,24 @@ Used by notion_processor.py today; Hermes (Phase 2) should call complete() too.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from .config import get as get_config
 
 ProviderName = Literal["openrouter", "gemini"]
+
+
+@dataclass
+class Usage:
+    provider: str
+    model: str
+    prompt_tokens: int
+    completion_tokens: int
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
 
 
 def resolve_provider() -> ProviderName:
@@ -104,6 +117,98 @@ def _call_gemini(
     )
     text = (response.text or "").strip()
     return text
+
+
+def _call_openrouter_with_usage(
+    system: str, user: str, *, json_mode: bool, temperature: float
+) -> tuple[str, Usage]:
+    from openai import OpenAI
+
+    cfg = get_config()
+    client = OpenAI(
+        api_key=cfg.openrouter_api_key,
+        base_url="https://openrouter.ai/api/v1",
+    )
+    kwargs: dict = {
+        "model": cfg.llm_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    response = client.chat.completions.create(**kwargs)
+    text = (response.choices[0].message.content or "").strip()
+    u = response.usage
+    usage = Usage(
+        provider="openrouter",
+        model=cfg.llm_model,
+        prompt_tokens=u.prompt_tokens if u else 0,
+        completion_tokens=u.completion_tokens if u else 0,
+    )
+    return text, usage
+
+
+def _call_gemini_with_usage(
+    system: str, user: str, *, json_mode: bool, temperature: float
+) -> tuple[str, Usage]:
+    from google import genai
+    from google.genai import types
+
+    cfg = get_config()
+    client = genai.Client(api_key=cfg.google_api_key)
+    config_kwargs: dict = {"temperature": temperature}
+    if json_mode:
+        config_kwargs["response_mime_type"] = "application/json"
+
+    response = client.models.generate_content(
+        model=cfg.gemini_model,
+        contents=user,
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            **config_kwargs,
+        ),
+    )
+    text = (response.text or "").strip()
+    um = getattr(response, "usage_metadata", None)
+    usage = Usage(
+        provider="gemini",
+        model=cfg.gemini_model,
+        prompt_tokens=getattr(um, "prompt_token_count", 0) or 0,
+        completion_tokens=getattr(um, "candidates_token_count", 0) or 0,
+    )
+    return text, usage
+
+
+def complete_with_usage(
+    system: str,
+    user: str,
+    *,
+    json_mode: bool = True,
+    temperature: float = 0.2,
+) -> tuple[str, Usage]:
+    """Like complete(), but also returns a Usage dataclass with token counts.
+
+    Use this in cost-reporting contexts; the main complete() path is unchanged.
+    """
+    provider = resolve_provider()
+    model = _model_name(provider)
+    print(f"[llm] provider={provider} model={model} json_mode={json_mode}")
+
+    if provider == "openrouter":
+        text, usage = _call_openrouter_with_usage(
+            system, user, json_mode=json_mode, temperature=temperature
+        )
+    else:
+        text, usage = _call_gemini_with_usage(
+            system, user, json_mode=json_mode, temperature=temperature
+        )
+
+    if not text:
+        raise RuntimeError(f"LLM ({provider}) returned an empty message.")
+    return text, usage
 
 
 def complete(

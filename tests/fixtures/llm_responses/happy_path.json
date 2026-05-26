@@ -2,7 +2,9 @@
   "tasks": [
     {
       "task_name": "Reply to Sarah Chen with revised Acme contract",
-      "context": "Sarah Chen (sarah@acme.com) requested the revised Acme contract by EOD Monday.",
+      "context": "Sarah Chen — revised Acme contract due EOD Monday",
+      "do": "Draft and send revised Acme contract email to Sarah Chen",
+      "why": "Sarah Chen (sarah@acme.com) requested the revision by EOD Monday.",
       "eisenhower": "Q3 Delegate",
       "schedule_date": "2026-05-23T08:00:00-07:00"
     }

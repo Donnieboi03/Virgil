@@ -1,4 +1,4 @@
-# Notion Processor — Extraction Prompt v3 (MVP schema + skeptical defaults)
+# Notion Processor — Extraction Prompt v4 (closure: page body + skeptical defaults)
 
 Used by `src/notion_processor.py`. Loaded as the system message; the user message is the rendered Daily Briefing (or Meeting Notes) body.
 
@@ -44,16 +44,21 @@ Return a JSON object with two top-level keys:
 }
 ```
 
-Each item in `tasks` must have exactly these fields:
+Each item in `tasks` must have these fields:
 
 | Field | Type | Allowed values |
 |---|---|---|
-| `task_name` | string | Short imperative, e.g. "Reply to Sarah re: Acme contract". Max ~80 chars. |
-| `context` | string | 1-3 sentences with enough detail that the executor can act WITHOUT re-reading the source. Include names, dates, links, the specific ask. For Q2, say what AI should set up (e.g. "block 30min Thursday for tax filing"). |
+| `task_name` | string | Short imperative for the board row. Max ~80 chars. |
+| `context` | string | **One line** for the Tasks table (names, dates, key fact). Not a narrative paragraph — detail goes in `do` / `why` / `steps`. |
+| `do` | string | **One-line imperative** — the closure-ready next action (verb first). Rendered on the task page under "Do". If omitted, defaults to `task_name`. |
+| `why` | string OR omit | One sentence: why this matters or what breaks if ignored. Omit if obvious from `do`. |
+| `steps` | array of strings OR omit | Max 5 items. **Only** when the source explicitly states a procedure (quoted language from email/meeting). Each step is one short imperative. Omit entirely if the source is vague — do not invent UI paths, URLs, or button names. |
 | `eisenhower` | string | One of: `Q1 Do`, `Q2 Schedule`, `Q3 Delegate`. **When unclear whether the item is even a real action item, prefer the Q4 skip path** (omit it from `tasks` and mention in `notes`) rather than fabricating a Q3. A false-positive Task is worse than a missed one — the human reviews the briefing too. |
 | `schedule_date` | string (ISO 8601 datetime) OR omit | When the task becomes eligible. See defaults below. |
 
 Do NOT include `target`, `risk_tier`, or `time_budget_seconds` — those columns no longer exist.
+
+**Closure rule:** The human opens the task page to see *how to close*, not to re-read the email. `do` + optional `why` + optional `steps` are the page body; `context` is the scannable table summary only.
 
 ### Eisenhower → default `schedule_date`
 
@@ -94,6 +99,7 @@ If there are no skips, omit `notes` or set it to an empty string.
 3. NEVER invent tasks. Informational content ("Reuters reports...") is not a Task.
 4. NEVER include URLs, emails, or names not present in the source.
 5. Multiple distinct actions → separate Task objects.
+6. **Never invent `steps`.** If the source does not state how to act (no login link, no "go to Settings," no explicit procedure), omit `steps` or use `[]`. Do not fabricate button names, menu paths, or URLs.
 
 ### Few-shot examples
 
@@ -120,13 +126,17 @@ Expected output:
   "tasks": [
     {
       "task_name": "Reply to Sarah Chen with revised Acme contract",
-      "context": "Sarah Chen (sarah@acme.com) requested the revised Acme contract by EOD Monday. Draft the email with the updated contract attached.",
+      "context": "Sarah Chen — revised Acme contract due EOD Monday",
+      "do": "Draft and send revised Acme contract email to Sarah Chen",
+      "why": "Sarah Chen (sarah@acme.com) requested the revision by EOD Monday.",
       "eisenhower": "Q3 Delegate",
       "schedule_date": "2026-05-23T08:00:00-07:00"
     },
     {
       "task_name": "Confirm Thursday 2pm screen with recruiter Bob",
-      "context": "Recruiter Bob asked if Thursday 2pm works for a screening call. Check calendar for conflicts, then reply to confirm or propose an alternative.",
+      "context": "Recruiter Bob — Thursday 2pm screening call",
+      "do": "Check calendar and reply to Bob confirming or proposing another time",
+      "why": "Bob asked if Thursday 2pm works for a screening call.",
       "eisenhower": "Q3 Delegate",
       "schedule_date": "2026-05-23T08:00:00-07:00"
     }
@@ -155,7 +165,12 @@ Expected output:
   "tasks": [
     {
       "task_name": "File quarterly taxes",
-      "context": "Quarterly tax filing due Jan 15. Block 45 minutes on calendar the day before for filing; attach relevant 1099s to the event description.",
+      "context": "Quarterly tax filing due Jan 15",
+      "do": "Block 45 minutes on calendar the day before Jan 15 for tax filing",
+      "why": "Quarterly tax filing deadline is Jan 15.",
+      "steps": [
+        "Attach relevant 1099s to the calendar event description"
+      ],
       "eisenhower": "Q2 Schedule"
     }
   ]
@@ -187,13 +202,26 @@ Expected output:
   "tasks": [
     {
       "task_name": "Update payment method for Lovable Labs",
-      "context": "Lovable Labs reported the $25.00 charge to your credit card failed again. Log into Lovable and update the card on file before the subscription lapses.",
+      "context": "Lovable Labs — $25 charge failed again",
+      "do": "Update payment method on Lovable Labs account",
+      "why": "The $25.00 charge failed again; subscription may lapse if not fixed.",
+      "steps": [
+        "Log into Lovable Labs",
+        "Update the credit card on file"
+      ],
       "eisenhower": "Q1 Do",
       "schedule_date": "2026-05-25T17:30:00-07:00"
     },
     {
       "task_name": "Prep for BNY Office Hours: Final Check-In",
-      "context": "BNY Office Hours: Final Check-In Before Induction is tomorrow. Block 15 min beforehand to review prior session notes and draft any questions; add a reminder 30 min before the call.",
+      "context": "BNY Office Hours — Final Check-In tomorrow",
+      "do": "Block 15 min before the call to review notes and draft questions",
+      "why": "BNY Office Hours: Final Check-In Before Induction is tomorrow.",
+      "steps": [
+        "Review prior session notes",
+        "Draft any questions for the call",
+        "Add a reminder 30 min before the call"
+      ],
       "eisenhower": "Q2 Schedule"
     }
   ],

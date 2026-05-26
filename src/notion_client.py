@@ -111,6 +111,14 @@ def _bullet(text: str) -> dict[str, Any]:
     }
 
 
+def _todo(text: str, *, checked: bool = False) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "to_do",
+        "to_do": {"rich_text": _rt(text), "checked": checked},
+    }
+
+
 def _news_blocks(news: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Render news items as one heading_3 per source + one bullet per headline.
 
@@ -317,19 +325,27 @@ def blocks_to_text(blocks: list[dict[str, Any]]) -> str:
     stop=stop_after_attempt(4),
     reraise=True,
 )
-def create_task_draft(properties: dict[str, Any]) -> str:
+def create_task_draft(
+    properties: dict[str, Any],
+    *,
+    children: list[dict[str, Any]] | None = None,
+) -> str:
     """Create a row in the Tasks DB with the given Notion property dict.
 
     Caller is responsible for shaping `properties` to Notion's nested format
     (e.g. {"Task Name": {"title": [...]}, "Status": {"select": {...}}}).
+    Optional `children` are page-body blocks (Do / Why / Steps) written at
+    create time — implements the closure principle from PLAN.md.
     Returns the new page ID.
     """
     cfg = get_config()
-    page = _rate_limited_call(
-        _notion().pages.create,
-        parent={"database_id": cfg.tasks_db_id},
-        properties=properties,
-    )
+    kwargs: dict[str, Any] = {
+        "parent": {"database_id": cfg.tasks_db_id},
+        "properties": properties,
+    }
+    if children:
+        kwargs["children"] = children
+    page = _rate_limited_call(_notion().pages.create, **kwargs)
     return page["id"]
 
 

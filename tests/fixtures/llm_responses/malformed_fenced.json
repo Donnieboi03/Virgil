@@ -3,7 +3,8 @@
   "tasks": [
     {
       "task_name": "Quick check",
-      "context": "Verify something.",
+      "context": "Verify billing status.",
+      "do": "Check billing page for any outstanding issues",
       "eisenhower": "Q3 Delegate",
       "schedule_date": "2026-05-25T09:00:00-07:00"
     }
