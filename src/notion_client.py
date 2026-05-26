@@ -40,9 +40,54 @@ def _notion() -> Client:
     return _client
 
 
+# Notion counts rich_text length in UTF-16 code units, not Python code points.
+# A single emoji can be 1 Python char but 2 UTF-16 units, so naive text[:2000]
+# can still produce 2002 on the wire.
+_NOTION_TEXT_LIMIT = 2000
+
+
+def _utf16_chunks(text: str, limit: int = _NOTION_TEXT_LIMIT) -> list[str]:
+    """Split text into chunks of at most `limit` UTF-16 code units.
+
+    Splits at the last whitespace inside each window when possible so we don't
+    break mid-word; falls back to a hard cut on the UTF-16 boundary, preserving
+    surrogate pairs (we never split a code point in half).
+    """
+    if not text:
+        return [""]
+    units = text.encode("utf-16-le")
+    if len(units) // 2 <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        encoded = remaining.encode("utf-16-le")
+        if len(encoded) // 2 <= limit:
+            chunks.append(remaining)
+            break
+        # Hard ceiling at the UTF-16 boundary, then back off to a whitespace
+        # split if there's one in the last ~10% of the window.
+        head_bytes = encoded[: limit * 2]
+        # Don't slice in the middle of a surrogate pair.
+        last_unit = head_bytes[-2:]
+        first_byte = last_unit[1] if len(last_unit) == 2 else 0
+        if 0xD8 <= first_byte <= 0xDB:
+            head_bytes = head_bytes[:-2]
+        head = head_bytes.decode("utf-16-le", errors="ignore")
+        split_at = head.rfind(" ", max(0, len(head) - limit // 10))
+        if split_at > limit // 2:
+            chunks.append(head[:split_at])
+            remaining = remaining[split_at + 1 :]
+        else:
+            chunks.append(head)
+            remaining = remaining[len(head) :]
+    return chunks
+
+
 def _rt(text: str) -> list[dict[str, Any]]:
-    """Build a rich_text block from a plain string, capped at Notion's 2000-char limit."""
-    return [{"type": "text", "text": {"content": text[:2000]}}]
+    """Build rich_text segments, splitting at Notion's per-segment 2000 UTF-16-unit limit."""
+    return [{"type": "text", "text": {"content": chunk}} for chunk in _utf16_chunks(text)]
 
 
 def _heading(text: str, level: int = 2) -> dict[str, Any]:
@@ -54,8 +99,76 @@ def _paragraph(text: str) -> dict[str, Any]:
     return {
         "object": "block",
         "type": "paragraph",
-        "paragraph": {"rich_text": _rt(text[:2000])},
+        "paragraph": {"rich_text": _rt(text)},
     }
+
+
+def _bullet(text: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {"rich_text": _rt(text)},
+    }
+
+
+def _news_blocks(news: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Render news items as one heading_3 per source + one bullet per headline.
+
+    Each item is {source, title, link, summary}. Summary, if present, becomes a
+    plain paragraph nested under the heading group (Notion's bulleted_list_item
+    cannot have block children via the create endpoint without an extra round
+    trip, so we emit the summary as a follow-up indented paragraph).
+    """
+    if not news:
+        return [_paragraph("_No headlines fetched. Check NEWS_RSS_FEEDS in .env._")]
+
+    blocks: list[dict[str, Any]] = []
+    current_source = ""
+    for item in news:
+        if item["source"] != current_source:
+            blocks.append(_heading(item["source"], 3))
+            current_source = item["source"]
+        title_md = f"[{item['title']}]({item['link']})" if item.get("link") else item["title"]
+        if item.get("summary"):
+            title_md += f" — {item['summary']}"
+        blocks.append(_bullet(title_md))
+    return blocks
+
+
+def _inbox_blocks(inbox: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Render inbox items as one paragraph per email — keeps each block well under 2000 chars."""
+    if not inbox:
+        return [_paragraph("_Inbox zero — no unread or recent messages._")]
+
+    blocks: list[dict[str, Any]] = []
+    for msg in inbox:
+        subject = msg.get("subject", "(no subject)")
+        sender = msg.get("from", "(unknown)")
+        snippet = msg.get("snippet", "")
+        line = f"{subject} — {sender}"
+        if snippet:
+            line += f"\n{snippet}"
+        blocks.append(_paragraph(line))
+    return blocks
+
+
+def _schedule_blocks(schedule: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Render calendar events as one bullet per event."""
+    if not schedule:
+        return [_paragraph("_No meetings today._")]
+
+    blocks: list[dict[str, Any]] = []
+    for ev in schedule:
+        time_label = ev.get("time", "all-day")
+        title = ev.get("title", "(untitled)")
+        details: list[str] = []
+        if ev.get("attendees"):
+            details.append(f"with {ev['attendees']}")
+        if ev.get("location"):
+            details.append(f"@ {ev['location']}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        blocks.append(_bullet(f"**{time_label}** {title}{suffix}"))
+    return blocks
 
 
 @retry(
@@ -66,11 +179,15 @@ def _paragraph(text: str) -> dict[str, Any]:
 )
 def create_briefing_note(
     date_str: str,
-    news_md: str,
-    inbox_md: str,
-    schedule_md: str,
+    news: list[dict[str, Any]],
+    inbox: list[dict[str, Any]],
+    schedule: list[dict[str, Any]],
 ) -> str:
     """Create a Daily Briefing row in the Notes DB.
+
+    Accepts structured lists so each item becomes its own block. This keeps
+    every rich_text segment well below Notion's 2000 UTF-16-unit per-segment
+    limit and makes the page scannable.
 
     Returns the Notion page ID of the created note.
     """
@@ -79,11 +196,11 @@ def create_briefing_note(
 
     body_blocks: list[dict[str, Any]] = [
         _heading("News", 2),
-        _paragraph(news_md),
+        *_news_blocks(news),
         _heading("Inbox", 2),
-        _paragraph(inbox_md),
+        *_inbox_blocks(inbox),
         _heading("Schedule", 2),
-        _paragraph(schedule_md),
+        *_schedule_blocks(schedule),
     ]
 
     page = _rate_limited_call(

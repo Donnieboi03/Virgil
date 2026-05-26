@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 import feedparser
 from dataclasses import dataclass
 
@@ -7,6 +9,15 @@ from .config import get as get_config
 
 SUMMARY_MAX = 400
 HEADLINES_PER_FEED = 5
+
+# Hacker News' RSS feed packs link metadata (Article URL, Comments URL, Points,
+# # Comments) into the <description> field instead of an actual summary. These
+# get dropped so HN entries appear with title-only and feeds that ship real
+# editorial blurbs (Ars, Verge, TechCrunch, etc.) still render properly.
+_METADATA_LINE = re.compile(
+    r"^\s*(Article URL|Comments URL|Points|#\s*Comments)\s*:.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 @dataclass
@@ -31,11 +42,10 @@ def fetch_headlines(limit_per_feed: int = HEADLINES_PER_FEED) -> list[Headline]:
             parsed = feedparser.parse(url)
             source = parsed.feed.get("title") or url
             for entry in parsed.entries[:limit_per_feed]:
-                title = entry.get("title", "").strip()
+                title = html.unescape(entry.get("title", "")).strip()
                 link = entry.get("link", "").strip()
                 raw_summary = entry.get("summary", "") or entry.get("description", "")
-                # feedparser often returns HTML in summaries — strip tags naively
-                clean_summary = _strip_tags(raw_summary)[:SUMMARY_MAX]
+                clean_summary = _clean_summary(raw_summary)[:SUMMARY_MAX]
                 if title:
                     out.append(Headline(title=title, link=link, source=source, summary=clean_summary))
         except Exception:
@@ -67,5 +77,16 @@ def format_for_briefing(headlines: list[Headline]) -> str:
 
 def _strip_tags(html: str) -> str:
     """Remove HTML tags from a string. Not a full parser — good enough for summaries."""
-    import re
     return re.sub(r"<[^>]+>", "", html).strip()
+
+
+def _clean_summary(raw: str) -> str:
+    """Strip HTML tags and drop HN-style metadata lines from a feed summary.
+
+    Returns an empty string for feeds whose summary is *only* metadata (e.g.
+    Hacker News) so the briefing renders title-only rather than appending
+    "Article URL: ... Comments URL: ...".
+    """
+    text = html.unescape(_strip_tags(raw))
+    text = _METADATA_LINE.sub("", text)
+    return re.sub(r"\s+", " ", text).strip()

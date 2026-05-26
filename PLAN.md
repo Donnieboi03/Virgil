@@ -54,6 +54,78 @@ Three runtime processes:
 
 ---
 
+## Design principle: closure over collection
+
+Virgil's job is not to give you a list of things. It is to give you a list of **closures** — items you can finish without re-entering "what is this and what do I do" every time you look.
+
+### The recursion problem
+
+Every collection surface fails the same way when it accumulates items that demand **cognitive engagement** instead of offering **closure**: Gmail, Notion Tasks, a Todoist project, a sticky-note pile. The mind has to re-derive context on every glance. That re-entry cost is what produces avoidance.
+
+A naive "extract tasks from email" pipeline does not solve this by itself. It relocates the dread:
+
+```
+Inbox (25 items, mostly noise)  →  Tasks DB (25 items, mostly context paragraphs)
+```
+
+The Notion Tasks DB only qualifies as a trusted system if it does not recreate the engagement tax.
+
+> "Anything you consider unfinished in any way must be captured in a trusted system outside your mind."
+> — David Allen, *Getting Things Done* (2001)
+
+That quote describes the *capture* half of GTD. Virgil must also satisfy the *clarify* half: captured items must be actionable at the moment you engage them.
+
+### The two levers
+
+Both levers are required. Either alone recreates the inbox problem in a new surface.
+
+| Lever | What it does | Without it |
+|---|---|---|
+| **Eisenhower filter** (reduces volume) | Rejects items that are not real action items — marketing, FYI, transactional confirmations, informational news | You drown in low-value rows even if each row is well-formed |
+| **Action decomposition** (reduces per-item cost) | Transforms "things to think about" into "things to close" | Even a 2-item queue feels heavy when every row is a mini thought exercise |
+
+| Volume ↓ | Per-item cost ↓ | Result |
+|---|---|---|
+| High | High | Still draining (few items, each expensive) |
+| Low | High | Still draining (small queue, each item re-derives context) |
+| High | Low | Still draining (many trivial items) |
+| **Low** | **Low** | **Sustainable** — the target operating point |
+
+**Eisenhower filter** is Phase 1.5 extractor behavior: aggressive Q4 skip in [`prompts/notion_processor_extract.md`](prompts/notion_processor_extract.md) (v3+). Most stream items never become Task rows.
+
+**Action decomposition** is the second half: what survives extraction must sit at the **action layer**, not the **decision layer**.
+
+- Project (decision layer): "BNY office hours prep"
+- Action (closure-ready): "Block 11:45am tomorrow to skim prior session notes and draft two questions"
+
+### Why decomposition matters
+
+The Eisenhower quadrant answers **whether** to engage. Decomposition answers **how to close** once you do.
+
+> "You can't do a project; you can only do action steps related to it."
+> — David Allen, *Getting Things Done* (2001)
+
+Without decomposition, Q1/Q2/Q3 Tasks still require re-deriving "what does this mean and what do I do" on every board glance — the same friction that drove the user away from email. Classification alone is necessary but not sufficient.
+
+### Implementation surface
+
+| Surface | Role | Owner |
+|---|---|---|
+| **Tasks DB table view** | Scannable: title, Eisenhower, schedule, one-line **Context** | Extractor writes properties |
+| **Task page body** (open the row) | Closure detail: Do / Why / optional Steps from the source | Extractor writes block children on create (planned v4) |
+| **Obsidian Skills** | Reusable procedures Hermes learns over time | Hermes (GEPA), never the extractor |
+
+**No new Tasks DB column for steps.** The 6-column MVP schema (`Task Name`, `Context`, `Status`, `Eisenhower`, `Schedule Date`, `Reflection`) stays intact. Decomposition lives in the **Notion task page body** — block children that render when you click the task — not as another property that bloats the table.
+
+- **Context (property):** one-line imperative for the board and for Hermes (agent instruction signal). Not a narrative paragraph.
+- **Page body:** Do, Why, and Steps (only when the source explicitly contains a procedure). This is what the human reads when they open the task.
+
+In-task steps are **one-shot next-actions** tied to a specific source item. They are not **Skills** (see Content drift ownership): Skills are canonical in Obsidian, written by Hermes after repeated execution, and refined via GEPA. Do not duplicate that model inside Notion Task rows.
+
+**Code path (when implemented):** extend [`src/notion_client.py`](src/notion_client.py) `create_task_draft()` to accept `children=` on `pages.create`, mirroring `create_briefing_note()`. Pair with extractor prompt v4 structured output (`do`, `why`, optional `steps[]`). Deferred until after this principle is documented — see [HANDOFF.md](HANDOFF.md).
+
+---
+
 ## Layer descriptions
 
 ### Hermes Agent (CPU)

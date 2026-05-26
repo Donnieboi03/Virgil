@@ -16,28 +16,58 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import html
+import re
 import sys
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import get as get_config
 from .google_clients import calendar, gmail
-from .news import fetch_headlines, format_for_briefing
+from .news import fetch_headlines
 from .notion_client import create_briefing_note
+
+# Marketing emails inject hundreds of zero-width / combining padding characters
+# into preheaders to inflate Gmail's snippet preview. Strip them so we don't
+# blow past Notion's per-block limit on noise.
+_INVISIBLE = re.compile(
+    r"[\u034F\u00AD\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E"
+    r"\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\u3164\uFEFF\uFFA0]+"
+)
+
+
+def _clean_text(s: str) -> str:
+    """Decode HTML entities, strip invisible padding chars, collapse whitespace."""
+    s = html.unescape(s)
+    s = _INVISIBLE.sub(" ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _clean_sender(raw: str) -> str:
+    """Return display name if present, else the local-part of the email address."""
+    name, addr = parseaddr(raw or "")
+    name = _clean_text(name)
+    if name:
+        return name
+    if addr and "@" in addr:
+        return addr.split("@", 1)[0]
+    return addr or "(unknown)"
 
 
 def _today_iso(tz: ZoneInfo) -> str:
     return dt.datetime.now(tz).date().isoformat()
 
 
-def _gmail_triage(tz: ZoneInfo) -> tuple[str, list[dict]]:
-    """Return (summary_markdown, raw_thread_list).
+def _gmail_triage(tz: ZoneInfo) -> list[dict[str, Any]]:
+    """Return a list of cleaned inbox records.
 
-    summary_markdown: bullet list of senders + subjects + snippet
-    raw_thread_list: raw dicts for downstream use
+    Each record: {id, from, subject, snippet}. Strips invisible padding chars
+    that marketing emails inject to inflate preview snippets, and reduces
+    sender to a display name (or email local-part) for readability.
 
     Actionability detection lives in src/notion_processor.py (Phase 2),
-    which invokes Notion AI on the rendered briefing. This module stays
+    which invokes the LLM on the rendered briefing. This module stays
     a dumb pipeline — no regex heuristics, no precomputed flags.
     """
     svc = gmail()
@@ -52,13 +82,10 @@ def _gmail_triage(tz: ZoneInfo) -> tuple[str, list[dict]]:
         .execute()
     )
     msgs = resp.get("messages", [])
-
     if not msgs:
-        return "_Inbox zero — no unread or recent messages._", []
+        return []
 
-    lines: list[str] = []
-    raw: list[dict] = []
-
+    out: list[dict[str, Any]] = []
     for m in msgs:
         full = (
             svc.users()
@@ -72,24 +99,22 @@ def _gmail_triage(tz: ZoneInfo) -> tuple[str, list[dict]]:
             .execute()
         )
         headers = {h["name"]: h["value"] for h in full["payload"].get("headers", [])}
-        sender = headers.get("From", "(unknown)")
-        subject = headers.get("Subject", "(no subject)")
-        snippet = full.get("snippet", "")[:200]
-        lines.append(f"- **{subject}**  _{sender}_\n  {snippet}")
-        raw.append(
+        out.append(
             {
                 "id": m["id"],
-                "from": sender,
-                "subject": subject,
-                "snippet": snippet,
+                "from": _clean_sender(headers.get("From", "")),
+                "subject": _clean_text(headers.get("Subject", "(no subject)")),
+                "snippet": _clean_text(full.get("snippet", ""))[:200],
             }
         )
-
-    summary = "\n".join(lines)
-    return summary, raw
+    return out
 
 
-def _calendar_schedule(tz: ZoneInfo, date_str: str) -> str:
+def _calendar_schedule(tz: ZoneInfo, date_str: str) -> list[dict[str, Any]]:
+    """Return a list of cleaned calendar event records.
+
+    Each record: {time, title, attendees, location}.
+    """
     svc = calendar()
     day = dt.date.fromisoformat(date_str)
     start = dt.datetime.combine(day, dt.time.min, tzinfo=tz).isoformat()
@@ -108,28 +133,23 @@ def _calendar_schedule(tz: ZoneInfo, date_str: str) -> str:
         .get("items", [])
     )
 
-    if not events:
-        return "_No meetings today._"
-
-    lines: list[str] = []
+    out: list[dict[str, Any]] = []
     for e in events:
         start_raw = e["start"].get("dateTime") or e["start"].get("date", "")
         time_label = start_raw[11:16] if "T" in start_raw else "all-day"
-        title = e.get("summary", "(untitled)")
         attendees = ", ".join(
             a.get("displayName") or a.get("email", "")
             for a in e.get("attendees", [])[:5]
         )
-        location = e.get("location", "")
-        details = []
-        if attendees:
-            details.append(f"with {attendees}")
-        if location:
-            details.append(f"@ {location}")
-        suffix = f"  ({', '.join(details)})" if details else ""
-        lines.append(f"- **{time_label}** {title}{suffix}")
-
-    return "\n".join(lines)
+        out.append(
+            {
+                "time": time_label,
+                "title": e.get("summary", "(untitled)"),
+                "attendees": attendees,
+                "location": e.get("location", ""),
+            }
+        )
+    return out
 
 
 def main() -> None:
@@ -141,20 +161,23 @@ def main() -> None:
 
     print("[ingestion] fetching news...")
     headlines = fetch_headlines()
-    news_md = format_for_briefing(headlines)
+    news = [
+        {"source": h.source, "title": h.title, "link": h.link, "summary": h.summary}
+        for h in headlines
+    ]
 
     print("[ingestion] fetching inbox...")
-    inbox_md, _raw_threads = _gmail_triage(tz)
+    inbox = _gmail_triage(tz)
 
     print("[ingestion] fetching calendar...")
-    schedule_md = _calendar_schedule(tz, date_str)
+    schedule = _calendar_schedule(tz, date_str)
 
     print("[ingestion] writing to Notion...")
     page_id = create_briefing_note(
         date_str=date_str,
-        news_md=news_md,
-        inbox_md=inbox_md,
-        schedule_md=schedule_md,
+        news=news,
+        inbox=inbox,
+        schedule=schedule,
     )
 
     print(f"[ingestion] briefing page {page_id}")
